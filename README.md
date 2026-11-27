@@ -1,13 +1,17 @@
 # Inkling2-OS
 
-Inkling2-OS is a native Linux appliance and Windows console for SC117 Inkling-2-Mini. Inkling2 brokers local inference, public HTTPS documents, RustXNG search and read-only previews of an operator-managed folder. A local Strata client can use the same inference API without an API key.
+Inkling2-OS opens a local AI desktop at sign-in. On Windows, use it to talk to Inkling2, open installed apps and settings, read documents and browse the web. On the private Linux appliance, the graphical session and inference service start at boot. Both use the SC117 Inkling-2-Mini models through the [native CUDA engine](https://github.com/zapabob/inkling2-cuda-engine). A local Strata client can share the key-free loopback API.
+
+![Inkling2 Desktop on Windows and the 131,072-token context setting. The SQ-10 hardware check used a short reference prompt.](docs/media/inkling2-desktop-131k.png)
+
+**Try the 131K window.** In **Inkling2 Desktop → Inkling2 に話す**, set **Context** to **131,072 tokens**. The window includes conversation history, chat-template tokens and room for the reply. Use the matching OS and engine revisions. The [Windows releases](https://github.com/zapabob/inkling2-os/releases) list the published binaries for each revision.
 
 | Status | Capability |
 | --- | --- |
 | Implemented | Loopback console, optional scoped credentials, read-only document previews, public HTTPS document browsing, RustXNG search and measured-GPU admission. |
-| Verified | Windows console, key-free browser and Finder, scoped API and Strata 0.8.6 provider registration. Windows SQ-10, SQ-15 and SQ-20 generated the expected digit and stopped on the arithmetic fixture. Earlier diagnostic media passed QEMU BIOS and UEFI boot. |
+| Prior Windows release | The console, key-free browser, Finder, scoped API and Strata 0.8.6 provider registration were exercised. SQ-10, SQ-15 and SQ-20 returned the expected digit and stopped on the short arithmetic fixture. |
 | Experimental | The OpenAI-compatible event stream emits the answer once native generation finishes. |
-| Context | Native desktop chats support up to 131,072 tokens including the chat template and reserved output. Full-length document quality and throughput require a separate end-to-end evaluation. |
+| 131K test coverage | CUDA boundary and ring-wrap tests passed. A Windows SQ-10 worker configured for 131,072 tokens returned the reference answer on short prompts. Full-length document quality and throughput require a separate end-to-end evaluation. Each Windows release requires the three-model checks below. |
 | Pending qualification | Physical Linux CUDA inference and matched hardware benchmarks. |
 | Private Linux USB | UEFI installation with the Linux CUDA engine, NVIDIA modules, a local graphical console and an offline model volume. See the validation record for the checks run on this image. |
 
@@ -15,7 +19,7 @@ Inkling2-OS is a native Linux appliance and Windows console for SC117 Inkling-2-
 
 ### Resident desktop on Windows
 
-Open **Inkling2 Desktop → Inkling2 に話す** and choose **Context**. Auto sizes the resident worker for the tokenized conversation. Selecting **131,072 tokens** requests the full window immediately. Native chat requests accept the same setting as `"context_length": 131072`. Each successful reply and its user message stay in this tab until you start a new conversation or switch models. The output setting reserves up to 128 tokens inside the selected window.
+**Context → Auto** sizes the resident worker for the tokenized conversation. Native chat requests can also specify `"context_length": 131072`. Each successful reply and its user message stay in this tab until you start a new conversation or switch models. The output setting reserves up to 128 tokens inside the selected window.
 
 The HTTP model list advertises the native context limit. `GET /v1/engine/status` reports the current resident capacity and worker PID. Increasing capacity can reload the model. The bridge checks measured GPU headroom before loading. Long prompts are processed locally and can take substantially longer than short chats.
 
@@ -72,8 +76,7 @@ output directory. Each model needs its matching sibling `tokenizer.json`.
 ./scripts/qualify-native-pair.ps1 -WindowsOnly -EngineRepo $engine -Model $sq10 -AdditionalModel @($sq15, $sq20) -CudaRoot $env:CUDA_PATH -OutputDir $qualification
 ```
 
-After both suites pass, push each tested commit to its repository's `main`.
-The engine push builds the CUDA runtime, checks the token protocol and stages the source.
+Push each tested source change to its repository's `main`. The engine push builds the CUDA runtime, checks the token protocol and stages the source.
 The OS push runs both Rust workspace jobs and the boot tests. Start the OS packaging
 workflow on the same main revision and check the resulting run:
 
@@ -83,8 +86,7 @@ gh run list --repo zapabob/inkling2-os --branch main --commit (git rev-parse HEA
 gh run list --repo zapabob/inkling2-cuda-engine --branch main --commit (git -C $engine rev-parse HEAD)
 ```
 
-The receipt binds the source, model files, ZIP archives and binaries to SHA-256 digests.
-Requalify after changing packaged source.
+The three-model hardware run must complete before installing or publishing. Its receipt binds the source, model files, ZIP archives and binaries to SHA-256 digests. Requalify after changing packaged source.
 
 ```powershell
 $promotion = @{ QualificationDir = $qualification; EngineRepo = $engine; Port = 18083 }
@@ -93,7 +95,7 @@ Invoke-RestMethod http://127.0.0.1:18083/v1/engine/status
 ./scripts/promote-native-pair.ps1 @promotion -Stage Publish -Tag $newWindowsTag
 ```
 
-Set `$newWindowsTag` to a fresh tag such as `v0.1.1-windows.2`. Installation saves the
+Set `$newWindowsTag` to a new Windows tag with the next available numeric suffix. Installation saves the
 previous binaries in the qualification directory. Verify a real chat reply and the desktop
 before publication. Publication checks both remote main revisions, all three successful
 workflow runs on those revisions, and the installed executable hashes.

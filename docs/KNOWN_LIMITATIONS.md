@@ -1,6 +1,6 @@
 # Known limitations
 
-The Windows adapter runs the native process per admitted request. It uses the model's embedded template and Hugging Face tokenizer, and sends numeric token IDs to the CUDA process. Native generation currently supports plain-text messages with reasoning disabled and a 4,096-token engine context. It buffers the answer before emitting OpenAI-compatible events. Model-level accuracy and long-context qualification remain separate from tokenizer conformance.
+The Windows adapter supports resident and one-shot CUDA processes. It uses the model's embedded template and tokenizer to encode plain-text messages with reasoning disabled. The native context can grow from 4,096 to 131,072 tokens, including reserved output. The bridge buffers the answer before emitting OpenAI-compatible events. Short reference prompts and CUDA boundary tests cover specific behaviour. Full-window document recall and throughput require separate measurements.
 
 The Linux engine builds for `sm_120a`. Physical GPU-backed boot, model generation, scheduler profiles, comparative performance and long context require hardware qualification. The live ISO’s companion state is volatile. Dynamic LoRA remains an adapter-state experiment, without a confirmed model-weight update path.
 
