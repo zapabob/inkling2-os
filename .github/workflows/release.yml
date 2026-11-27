@@ -1,0 +1,97 @@
+name: Release Inkling2-OS
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive_ext: zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+      - name: Build release binaries
+        run: cargo build --release --workspace
+
+      - name: Package Windows release bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event_name }}" -eq "workflow_dispatch") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $stage = "release-stage/inkling2-os-$tag-win64"
+          New-Item -ItemType Directory -Force -Path "$stage/bin", "$stage/python", "$stage/scripts", "release-dist" | Out-Null
+          Copy-Item "target/release/inkling2-shell.exe" "$stage/bin/"
+          Copy-Item "target/release/inkling2-init.exe" "$stage/bin/"
+          Copy-Item "python/hakua_bridge.py" "$stage/python/"
+          Copy-Item "scripts/*.sh" "$stage/scripts/"
+          Copy-Item "README.md", "DESIGN.md", "LICENSE" "$stage/"
+          Compress-Archive -Path "$stage/*" -DestinationPath "release-dist/inkling2-os-$tag-win64-ci.zip" -Force
+
+      - name: Package Linux release bundle
+        if: runner.os == 'Linux'
+        run: |
+          TAG=$([ "${{ github.event_name }}" = "workflow_dispatch" ] && echo "${{ github.event.inputs.tag }}" || echo "${{ github.ref_name }}")
+          STAGE="release-stage/inkling2-os-${TAG}-linux-x86_64"
+          mkdir -p "${STAGE}/bin" "${STAGE}/python" "${STAGE}/scripts" release-dist
+          cp target/release/inkling2-shell target/release/inkling2-init "${STAGE}/bin/"
+          cp python/hakua_bridge.py "${STAGE}/python/"
+          cp scripts/*.sh "${STAGE}/scripts/"
+          cp README.md DESIGN.md LICENSE "${STAGE}/"
+          tar -czf "release-dist/inkling2-os-${TAG}-linux-x86_64.tar.gz" -C release-stage "inkling2-os-${TAG}-linux-x86_64"
+
+      - name: Upload build artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: inkling2-os-${{ matrix.target }}
+          path: release-dist/*
+
+  publish-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artefacts
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$([ "${{ github.event_name }}" = "workflow_dispatch" ] && echo "${{ github.event.inputs.tag }}" || echo "${{ github.ref_name }}")
+          (cd all-artefacts && sha256sum * > SHA256SUMS-ci.txt)
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" all-artefacts/* --clobber
+          else
+            gh release create "${TAG}" all-artefacts/* \
+              --title "Inkling2-OS ${TAG}" \
+              --notes "Automated cross-platform release (Windows & Linux) for Inkling2-OS ${TAG} with Strata-aligned macOS-style Web Console."
+          fi
