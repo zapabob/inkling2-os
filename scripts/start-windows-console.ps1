@@ -11,6 +11,9 @@ param(
     [int]$RustXngPort = 0,
     [switch]$Open,
     [switch]$UseTokens,
+    [switch]$Resident,
+    [string]$PreloadModel,
+    [switch]$SkipUsbCache,
     [ValidateSet('Console', 'Inference')]
     [string]$CopyToken
 )
@@ -99,6 +102,13 @@ $settings = @{
     INKLING2_MODELS_DIR = if ($ModelsDir) { (Resolve-Path -LiteralPath $ModelsDir).Path } else { $null }
     INKLING2_PREVIEW_DIR = if ($PreviewDir) { (Resolve-Path -LiteralPath $PreviewDir).Path } else { $null }
 }
+if ($Resident) {
+    $settings.INKLING2_RESIDENT = '1'
+    if ($PreloadModel) { $settings.INKLING2_PRELOAD_MODEL = $PreloadModel }
+    if (-not $env:INKLING2_EXPERT_VRAM_MIB) { $settings.INKLING2_EXPERT_VRAM_MIB = '2048' }
+    if (-not $env:INKLING2_EXPERT_RAM_MIB) { $settings.INKLING2_EXPERT_RAM_MIB = '512' }
+}
+if ($SkipUsbCache) { $settings.INKLING2_EXPERT_USB_DIR = $null }
 $strataModels = Join-Path $env:LOCALAPPDATA 'Strata/model-weights/SC117/Inkling-2-Mini'
 if (-not $AdditionalModelsDirs -and (Test-Path -LiteralPath $strataModels -PathType Container)) {
     $AdditionalModelsDirs = @($strataModels)

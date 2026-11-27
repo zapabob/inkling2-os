@@ -787,7 +787,7 @@
               <h2>Inkling2-OS Local Console</h2>
               <p>SC117 Inkling-2-Mini を CUDA 13.5 Blackwell Tensor Core と 45 MiB Memory45 でローカル実行します。</p>
               <div class="quick-prompts">
-                <button type="button" class="chip" data-prompt="Inkling2-OS の現在の状態を3行で要約してください。">OS状態を要約</button>
+                <button type="button" class="chip" id="btn-system-status">OS 状態を3行で表示</button>
                 <button type="button" class="chip" data-prompt="CUDA 13.5 sm_120a の NVFP4 Tensor Core の利点を簡潔に教えてください。">NVFP4 Tensor Core解説</button>
                 <button type="button" class="chip" data-prompt="春の海をテーマに俳句を一句詠んでください。">俳句を一句</button>
               </div>
@@ -1003,7 +1003,8 @@
                   <input id="voice-text" class="mac-input" style="flex:1;" placeholder="読み上げテスト文…" value="Inkling2-OS、起動完了しました。" />
                   <button type="button" class="btn-secondary" id="btn-voice-say">Speak</button>
                 </div>
-                <div class="kv-label" id="voice-status" style="margin-top:6px;font-size:12px;"></div>
+                  <audio id="voice-audio" controls hidden aria-label="読み上げ音声"></audio>
+                  <div class="kv-label" id="voice-status" role="status" style="margin-top:6px;font-size:12px;"></div>
               </div>
             </div>
           </div>

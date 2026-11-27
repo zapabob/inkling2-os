@@ -6,6 +6,9 @@ param(
     [string]$ModelPath,
     [ValidateRange(1024,65535)][int]$Port = 18081,
     [ValidateRange(0,65535)][int]$RustXngPort = 29483,
+    [switch]$Resident,
+    [string]$PreloadModel = 'Inkling-2-Mini-SQ-15-abliterated',
+    [switch]$SkipUsbCache,
     [string]$UsbWriteLog,
     [string]$UsbVerification,
     [ValidatePattern('^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$')][string]$Tag = 'v0.1.1'
@@ -90,6 +93,7 @@ if ($Stage -eq 'Install') {
     }
 
     $candidate['../scripts/start-windows-console.ps1'] = Join-Path $stageDir 'console/scripts/start-windows-console.ps1'
+    $candidate['../scripts/start-windows-desktop.ps1'] = Join-Path $stageDir 'console/scripts/start-windows-desktop.ps1'
     $candidate['../scripts/start-rustxng-full.ps1'] = Join-Path $stageDir 'console/scripts/start-rustxng-full.ps1'
     $listener = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
     if ($listener.Count) {
@@ -114,6 +118,7 @@ if ($Stage -eq 'Install') {
     $launch = @{
         Port = $Port; ShellPath = $shell; EnginePath = $engine; ModelsDir = $source.DirectoryName
         PreviewDir = Join-Path $osRepo 'docs'; RustXngPort = $RustXngPort
+        Resident = $Resident; PreloadModel = $PreloadModel; SkipUsbCache = $SkipUsbCache
     }
     if ($listener.Count) { Stop-Process -Id $service.ProcessId }
     try {

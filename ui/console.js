@@ -13,14 +13,24 @@
     });
 
     // Segmented view switcher
-    document.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const target = btn.dataset.view;
-        document.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    const tabs = Array.from(document.querySelectorAll('.seg-btn'));
+    function showView(target) {
+        if (!tabs.some(tab => tab.dataset.view === target)) return;
+        tabs.forEach(tab => {
+          tab.classList.toggle('active', tab.dataset.view === target);
+          tab.setAttribute('aria-selected', String(tab.dataset.view === target));
+        });
         document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + target));
         $('sidebar').classList.remove('open');
+    }
+    tabs.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        showView(btn.dataset.view);
+        history.replaceState(null, '', '#' + btn.dataset.view);
       });
     });
+    window.addEventListener('hashchange', () => showView(location.hash.slice(1)));
+    showView(location.hash.slice(1) || 'chat');
 
     let consoleToken = '';
     let localConsole = false;
@@ -41,6 +51,22 @@
     }
 
     const accessDialog = $('access-dialog');
+    $('btn-system-status').addEventListener('click', async () => {
+      const [system, gpu, catalogue] = await Promise.all([api('/v1/engine/status'), api('/v1/gpu/info'), api('/v1/models')]);
+      if (!system.ok) {
+        $('chat-status').textContent = 'システムの状態を取得できませんでした。';
+        return;
+      }
+      const state = system.data;
+      const g = gpu.data;
+      const modelCount = catalogue.ok ? catalogue.data.data.length : '取得失敗';
+      const report = [
+        'Inkling2 は ' + state.platform + ' で稼働中です。',
+        g.available ? g.name + ' · VRAM ' + g.memory_used_mib + ' / ' + g.memory_total_mib + ' MiB 使用中' : 'GPU 情報を取得できませんでした。',
+        '推論エンジン ' + state.state + (state.model ? ' · ' + state.model : '') + ' ／ 登録モデル ' + modelCount,
+      ];
+      appendMessage('assistant', report.join('\n'), null, 'OS テレメトリ · ' + new Date().toLocaleTimeString());
+    });
     $('btn-access').addEventListener('click', () => {
       if (consoleToken) {
         consoleToken = '';
@@ -268,7 +294,7 @@
         sendChat();
       }
     });
-    document.querySelectorAll('.chip').forEach((c) => {
+    document.querySelectorAll('.chip[data-prompt]').forEach((c) => {
       c.addEventListener('click', () => sendChat(c.dataset.prompt));
     });
 
@@ -336,12 +362,35 @@
       await api('/v1/lora/rollback', { method: 'POST', body: '{}' });
       refreshHealthAndState();
     });
+    let voiceUrl;
     $('btn-voice-say').addEventListener('click', async () => {
       const text = $('voice-text').value.trim();
       if (!text) return;
       $('voice-status').textContent = 'Synthesizing…';
-      const r = await api('/v1/voice/say', { method: 'POST', body: JSON.stringify({ text }) });
-      $('voice-status').textContent = r.ok ? (r.data.detail || 'OK') : ('Error: ' + (r.data.error || r.status));
+      const button = $('btn-voice-say');
+      const audio = $('voice-audio');
+      button.disabled = true;
+      audio.pause();
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (consoleToken) headers.Authorization = 'Bearer ' + consoleToken;
+        const response = await fetch('/v1/voice/say', { method: 'POST', headers,
+          redirect: 'error', body: JSON.stringify({ text, playback: true }) });
+        if (!response.ok) throw new Error((await response.json()).error || 'Speech synthesis failed');
+        const clip = await response.blob();
+        if (clip.type !== 'audio/wav') throw new Error('The bridge did not return audio.');
+        if (voiceUrl) URL.revokeObjectURL(voiceUrl);
+        voiceUrl = URL.createObjectURL(clip);
+        audio.src = voiceUrl;
+        audio.hidden = false;
+        $('voice-status').textContent = '読み上げ音声を生成しました。';
+        try { await audio.play(); }
+        catch { $('voice-status').textContent = '再生ボタンを押してください。'; }
+      } catch (error) {
+        $('voice-status').textContent = '読み上げに失敗しました。 ' + error.message;
+      } finally {
+        button.disabled = false;
+      }
     });
     $('btn-refresh-models').addEventListener('click', refreshModels);
 

@@ -1,12 +1,14 @@
 //! HTTPS document retrieval with a freshly validated, pinned destination at each hop.
 
 use std::borrow::Cow;
+use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use url::Url;
 
-const MAX_BYTES: usize = 256 * 1024;
+const MAX_BYTES: usize = 2 * 1024 * 1024;
+const TOO_LARGE: FetchError = (false, "document exceeds the 2 MiB reading limit");
 type FetchError = (bool, &'static str);
 
 pub struct Page {
@@ -42,6 +44,14 @@ pub fn host_for_url(url: &str) -> Result<&str, &'static str> {
         return Err("invalid HTTPS URL");
     }
     let host = rest.split(['/', '?']).next().unwrap_or_default();
+    if host
+        .trim_end_matches('.')
+        .rsplit('.')
+        .next()
+        .is_some_and(|tld| tld.eq_ignore_ascii_case("onion"))
+    {
+        return Err("open .onion addresses in Tor Browser");
+    }
     let valid = host.len() <= 253
         && host.rsplit_once('.').is_some_and(|(_, tld)| {
             tld.bytes().any(|b| b.is_ascii_alphabetic())
@@ -93,7 +103,7 @@ fn fetch_once(url: &str) -> Result<(Page, Option<String>), FetchError> {
     }
     let ip = ipv4.ok_or((true, "no public IPv4 address was found"))?;
     let pin = format!("{host}:443:{ip}");
-    let out = Command::new("curl")
+    let mut child = Command::new("curl")
         .args([
             "--disable",
             "--silent",
@@ -108,7 +118,7 @@ fn fetch_once(url: &str) -> Result<(Page, Option<String>), FetchError> {
             "--resolve",
             &pin,
             "--max-filesize",
-            "262144",
+            &MAX_BYTES.to_string(),
             "--connect-timeout",
             "5",
             "--max-time",
@@ -118,19 +128,44 @@ fn fetch_once(url: &str) -> Result<(Page, Option<String>), FetchError> {
             "--",
             url,
         ])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|_| (false, "HTTPS client unavailable"))?;
     let failed = (false, "HTTPS retrieval failed");
-    let separator = out.stdout.iter().rposition(|&b| b == b'\n').ok_or(failed)?;
-    let (body, suffix) = out.stdout.split_at(separator);
+    let mut stdout = Vec::new();
+    // Older curl versions cannot enforce --max-filesize on chunked responses.
+    // Allow space for curl's HTTP metadata, then stop reading the child.
+    let limit = MAX_BYTES + 8192;
+    let read = child
+        .stdout
+        .take()
+        .ok_or(failed)?
+        .take((limit + 1) as u64)
+        .read_to_end(&mut stdout);
+    if read.is_err() || stdout.len() > limit {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(if read.is_err() { failed } else { TOO_LARGE });
+    }
+    let status = child.wait().map_err(|_| failed)?;
+    match status.code() {
+        Some(0) => {}
+        Some(63) => return Err(TOO_LARGE),
+        Some(28) => return Err((false, "HTTPS connection timed out")),
+        Some(35 | 60) => return Err((false, "TLS connection or certificate validation failed")),
+        _ => return Err(failed),
+    }
+    let separator = stdout.iter().rposition(|&b| b == b'\n').ok_or(failed)?;
+    let (body, suffix) = stdout.split_at(separator);
     let mut metadata = std::str::from_utf8(&suffix[1..])
         .map_err(|_| failed)?
         .splitn(3, '\t');
     let code: u16 = metadata.next().ok_or(failed)?.parse().map_err(|_| failed)?;
     let content_type = metadata.next().ok_or(failed)?;
     let redirect = metadata.next().ok_or(failed)?;
-    if !out.status.success() || body.len() > MAX_BYTES {
-        return Err(failed);
+    if body.len() > MAX_BYTES {
+        return Err(TOO_LARGE);
     }
     let mut page = Page {
         url: url.to_owned(),
@@ -234,6 +269,12 @@ mod tests {
         assert!(host_for_url("https://example.com/example").is_ok());
         assert!(host_for_url("http://example.com/").is_err());
         assert!(host_for_url("https://localhost/").is_err());
+        for url in ["https://example.onion/", "https://example.OnIoN./"] {
+            assert_eq!(
+                host_for_url(url),
+                Err("open .onion addresses in Tor Browser")
+            );
+        }
         assert!(host_for_url("https://example.com:444/").is_err());
         assert!(host_for_url("https://user@example.com/").is_err());
         assert!(allowed_ip(Ipv4Addr::new(1, 1, 1, 1)));

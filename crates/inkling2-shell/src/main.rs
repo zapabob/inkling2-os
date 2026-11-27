@@ -16,6 +16,7 @@ mod native_inference;
 mod native_prompt;
 mod net_client;
 mod public_browser;
+mod resident_engine;
 mod strata_catalog;
 mod web_search;
 

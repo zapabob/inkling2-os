@@ -163,6 +163,7 @@ pub fn generate(
     model: &StrataModelInfo,
     messages: &[Value],
     max: u64,
+    resident: Option<&mut crate::resident_engine::ResidentEngine>,
 ) -> Result<NativeReply, InferenceError> {
     if !engine.is_file() {
         return Err(("503 Service Unavailable", "native executable is missing"));
@@ -174,6 +175,13 @@ pub fn generate(
         csv(&prompt.stop_ids),
         csv(&prompt.input_ids)
     );
+    if let Some(worker) = resident {
+        let line = worker.exchange(request)?;
+        return read_reply(&line, &prompt, max).ok_or((
+            "502 Bad Gateway",
+            "the model returned an invalid output token sequence",
+        ));
+    }
     let mut child = Command::new(engine)
         .arg("generate-token-ids")
         .arg(&model.path)

@@ -12,6 +12,35 @@ Inkling2-OS is a native Linux appliance and Windows console for SC117 Inkling-2-
 
 ## Windows console
 
+### Resident desktop on Windows
+
+Extract the Windows console archive into an empty directory, then extract the matching
+engine archive into its `bin` directory. With PowerShell 7.4 or newer, run the desktop
+launcher from the extracted directory. Replace the example model directory with your
+own SC117 weights and matching tokenizer.
+
+```powershell
+./scripts/start-windows-desktop.ps1 -ModelsDir 'C:/Models/SC117' -RegisterAtLogon
+./scripts/start-windows-desktop.ps1 -ModelsDir 'C:/Models/SC117'
+```
+
+The current user's Start menu and Startup folder receive an **Inkling2 Desktop** shortcut.
+The desktop opens applications, documents, Web search, Tor Browser, Windows Settings and
+Task Manager. Install the signed Windows x86-64 package from the [Tor Project](https://www.torproject.org/download/)
+in `%LOCALAPPDATA%/Programs/Tor Browser` to enable its native launcher. Choose Connect
+in Tor Browser on first use. The HTTPS reader rejects onion addresses before DNS resolution.
+The Tor package is distributed separately.
+The loopback bridge stays available after the window closes. On port 18083, Strata can use
+`http://127.0.0.1:18083/v1` without a key. To disable automatic launch, remove the
+**Inkling2 Desktop** shortcut from `shell:startup`.
+
+The default preload model is `Inkling-2-Mini-SQ-15-abliterated`. Select another ID with
+`-PreloadModel`. The worker retains one model, resets each conversation's sequence state
+and releases the previous model when switching. `GET /v1/engine/status` reports the live
+worker state. `POST /v1/engine/unload` with an empty JSON object frees an idle worker.
+The desktop's initial expert cache caps are 2 GiB VRAM and 512 MiB pinned RAM.
+Add `-SkipUsbCache` when the removable drive is in use by the Linux installer.
+
 Build with `cargo build --release --locked --workspace -j 1`. From a Windows bundle, the launcher selects the packaged executable automatically. In PowerShell 7.4 or later, run:
 
 ```powershell
@@ -28,7 +57,30 @@ Use the CUDA executable that supports `generate-token-ids`. The shell reads the 
 
 The launcher also scans the installed Strata folder under `%LOCALAPPDATA%/Strata/model-weights/SC117/Inkling-2-Mini`. You can add other model folders with `-AdditionalModelsDirs`. All three SC117 weights use the same root `tokenizer.json` from the model publisher. On this workstation the launcher detects the NVMe, SATA SSD and removable USB by their Windows storage bus. The engine keeps priority experts in VRAM and CPU RAM, then caches cold experts in temporary files of up to 256 MiB per drive. It leaves 2 GiB free per volume and uses the original weights when a cache is unavailable. The installed Start menu entry opens the local GUI.
 
-For a Windows-only release, run `scripts/qualify-native-pair.ps1 -WindowsOnly` with the SQ-10 path in `-Model` and the SQ-15 and SQ-20 paths in `-AdditionalModel`. Use the resulting receipt with `scripts/promote-native-pair.ps1 -Stage Install`. Windows-only release tags have the form `v0.1.1-windows.1`.
+### Publishing a Windows pair
+
+In the x64 Visual Studio Developer PowerShell, set `$engine` to the CUDA engine checkout,
+`$sq10`, `$sq15` and `$sq20` to the original model files, and `$qualification` to a new
+output directory. Each model needs its matching sibling `tokenizer.json`.
+
+```powershell
+./scripts/qualify-native-pair.ps1 -WindowsOnly -EngineRepo $engine -Model $sq10 -AdditionalModel @($sq15, $sq20) -CudaRoot $env:CUDA_PATH -OutputDir $qualification
+```
+
+After both suites pass, commit and push each qualified tree on its own branch.
+The receipt binds the source, model files, ZIP archives and binaries to SHA-256 digests.
+Requalify after changing packaged source.
+
+```powershell
+$promotion = @{ QualificationDir = $qualification; EngineRepo = $engine; Port = 18083 }
+./scripts/promote-native-pair.ps1 @promotion -Stage Install -ModelPath $sq10 -Resident -SkipUsbCache
+Invoke-RestMethod http://127.0.0.1:18083/v1/engine/status
+./scripts/promote-native-pair.ps1 @promotion -Stage Publish -Tag $newWindowsTag
+```
+
+Set `$newWindowsTag` to a fresh tag such as `v0.1.1-windows.2`. Installation saves the
+previous binaries in the qualification directory. Verify a real chat reply and the desktop
+before publication. Publication checks the pushed revisions and installed executable hashes.
 
 ### Web search
 
@@ -55,7 +107,7 @@ Both images include Wine for 64-bit Windows command-line programs. At the physic
 
 Run `scripts/qualify-native-pair.ps1` from the x64 Visual Studio Developer PowerShell with the engine checkout, original SQ-10 model, CUDA 13.5 toolkit and an ignored output directory. The gate runs the Rust workspace and tokenizer suites, the CUDA tests and real SQ-10 reference check, then the BIOS, UEFI and installed-disk boot tests. It writes a qualification receipt only after a successful run. The receipt binds both source trees and the packaged assets to checksums.
 
-Commit and push each qualified tree on its own branch. `scripts/promote-native-pair.ps1 -Stage Install` checks those pushed revisions and the archive hashes, replaces the local Windows console binaries, and keeps rollback copies. For the dedicated USB, `scripts/prepare-private-usb.ps1` builds and boots the private disk bundle in QEMU. Pass its verification hashes and original model path to `scripts/write-installed-usb.ps1`. `scripts/promote-native-pair.ps1 -Stage Publish` checks the installed Windows binaries and the verified USB write log before publishing the paired releases. The public ISO supports diagnostics. The private USB carries its own CUDA and model assets.
+Commit and push each qualified tree on its own branch. `scripts/promote-native-pair.ps1 -Stage Install` checks the qualified source and the archive hashes, replaces the local Windows console binaries, and keeps rollback copies. For the dedicated USB, `scripts/prepare-private-usb.ps1` builds and boots the private disk bundle in QEMU. Pass its verification hashes and original model path to `scripts/write-installed-usb.ps1`. `scripts/promote-native-pair.ps1 -Stage Publish` checks the installed Windows binaries and the verified USB write log before publishing the paired releases. The public ISO supports diagnostics. The private USB carries its own CUDA and model assets.
 
 Read the [architecture](docs/ARCHITECTURE.md), [boot process](docs/BOOT_PROCESS.md), [security model](docs/SECURITY.md), [hardware support](docs/HARDWARE_COMPATIBILITY.md), [limitations](docs/KNOWN_LIMITATIONS.md) and [validation record](docs/V0.1.1_VALIDATION.md).
 
