@@ -196,6 +196,22 @@ fn state_directory() -> io::Result<&'static str> {
     }
     if installed {
         symlink(wine, "/run/inkling2-wine")?;
+    } else {
+        // Casper can size its shared /run below a single Wine prefix.
+        // A separate tmpfs has an independent limit without reserving RAM up front.
+        let status = Command::new("/bin/mount")
+            .args([
+                "-t",
+                "tmpfs",
+                "-o",
+                "nosuid,nodev,size=1400m,mode=0700,uid=61001,gid=61001",
+                "inkling2-wine",
+                wine,
+            ])
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other("could not mount live Wine state"));
+        }
     }
     Ok(state)
 }
