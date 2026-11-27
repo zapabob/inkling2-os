@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=System Information
+Exec=inkling2-desktop-launch system
+Icon=computer

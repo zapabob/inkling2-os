@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Inkling2
+Exec=inkling2-desktop-launch chat
+Icon=applications-science

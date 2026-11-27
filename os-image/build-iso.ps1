@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-Write-Host "[Inkling2-OS] Building reproducible UEFI/BIOS ISO via Docker (CUDA 13.5 sm_120a + Rust 2024 PID 1)..."
+Write-Host "[Inkling2-OS] Building the UEFI/BIOS diagnostic ISO with the Rust PID 1..."
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $OutDir = (Resolve-Path -LiteralPath $OutDir).Path
 docker build `

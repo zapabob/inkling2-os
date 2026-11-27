@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 ARG RUST_IMAGE=rust:1.94.1-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55
 ARG UBUNTU_IMAGE=ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+ARG VERIFIER_IMAGE=ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 FROM ${RUST_IMAGE} AS rust-build
 WORKDIR /src
@@ -8,22 +9,75 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY ui/ ui/
 COPY python/ python/
-RUN cargo test --locked --workspace -j 2 && cargo build --locked --release --workspace -j 2 \
-    && strip target/release/inkling2-init target/release/inkling2-shell
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build-cache \
+    CARGO_TARGET_DIR=/build-cache cargo test --locked --workspace -j 2 \
+    && CARGO_TARGET_DIR=/build-cache cargo build --locked --release --workspace -j 2 \
+    && install -D -m 0755 /build-cache/release/inkling2-init /compiled/inkling2-init \
+    && install -D -m 0755 /build-cache/release/inkling2-shell /compiled/inkling2-shell \
+    && strip /compiled/inkling2-init /compiled/inkling2-shell
+
+FROM ${RUST_IMAGE} AS search-build
+WORKDIR /search
+RUN git clone --depth 1 --branch v0.32.0 https://gitlab.com/sahenjp/rustxng-mirror.git . \
+    && test "$(git rev-parse HEAD)" = 0aa36b3d27648e35b1001410a2df720d01e21ee1 \
+    && cargo build --locked --release --no-default-features --bin rustxng -j 2 \
+    && strip target/release/rustxng \
+    && target/release/rustxng --profile full --check-config
+RUN git archive --format=tar.gz --prefix=rustxng-0.32.0/ --output=/search/rustxng-0.32.0-source.tar.gz HEAD
 
 FROM ${UBUNTU_IMAGE} AS appliance
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl iproute2 kmod nftables mount util-linux \
-    dhcpcd-base wpasupplicant chrony \
+    dhcpcd-base wpasupplicant chrony apparmor bubblewrap wine64 xvfb xauth ntfs-3g \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=rust-build /src/target/release/inkling2-init /sbin/inkling2-init
-COPY --from=rust-build /src/target/release/inkling2-shell /usr/bin/inkling2-shell
+COPY --from=rust-build /compiled/inkling2-init /sbin/inkling2-init
+COPY --from=rust-build /compiled/inkling2-shell /usr/bin/inkling2-shell
+COPY --from=search-build /search/target/release/rustxng /usr/bin/rustxng
+COPY --from=search-build /search/LICENSE /search/NOTICE /usr/share/doc/rustxng/
+COPY --from=search-build /search/rustxng-0.32.0-source.tar.gz /usr/share/doc/rustxng/
 COPY os-image/net/nftables.conf /etc/inkling2/nftables.conf
+COPY --chmod=0755 os-image/wine-inkling2 /usr/bin/wine-inkling2
+COPY os-image/inkling2-wine.apparmor /etc/apparmor.d/inkling2-wine
 RUN groupadd --gid 61000 inkling2 && useradd --uid 61000 --gid 61000 \
     --no-create-home --shell /usr/sbin/nologin inkling2 \
+    && groupadd --gid 61001 inkling2-console \
+    && useradd --uid 61001 --gid 61001 --home-dir /run/inkling2-wine --no-create-home --shell /bin/sh inkling2-console \
+    && groupadd --gid 61002 inkling2-search \
+    && useradd --uid 61002 --gid 61002 --no-create-home --shell /usr/sbin/nologin inkling2-search \
+    && install -d -o root -g inkling2 -m 0750 /var/lib/inkling2/files \
+    && install -d -o root -g inkling2-console -m 0750 /var/lib/inkling2/wine-apps \
+    && install -D -o root -g inkling2-console -m 0750 /usr/bin/bwrap /usr/lib/inkling2/wine-bwrap \
+    && printf 'nameserver 1.1.1.1\nnameserver 9.9.9.9\n' > /etc/inkling2/resolv.conf \
     && mkdir -p /models /dev/pts /dev/shm /dev/hugepages \
     && ldd /sbin/inkling2-init && ldd /usr/bin/inkling2-shell
+
+FROM appliance AS private-appliance
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    epiphany-browser fonts-dejavu-core fonts-noto-cjk linux-firmware-realtek openbox udev \
+    x11-utils xinit xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-video-fbdev \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM private-appliance AS private-desktop-appliance
+RUN apt-get update && apt-get install -y --no-install-recommends libdbus-glib-1-2 tint2 xterm \
+    && groupadd --gid 61003 inkling2-tor \
+    && useradd --uid 61003 --gid 61003 --home-dir /var/lib/inkling2/tor-state \
+        --no-create-home --shell /usr/sbin/nologin inkling2-tor \
+    && rm -rf /var/lib/apt/lists/*
+COPY --chmod=0755 os-image/inkling2-desktop-launch /usr/bin/inkling2-desktop-launch
+COPY --chmod=0755 os-image/inkling2-tor-session /usr/lib/inkling2/tor-session
+COPY os-image/desktop/*.desktop /usr/share/applications/
+COPY os-image/desktop/tint2rc /etc/inkling2/desktop/tint2rc
+
+FROM ${UBUNTU_IMAGE} AS tor-browser
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gpg gpgv xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends gpg-agent \
+    && rm -rf /var/lib/apt/lists/*
+COPY --chmod=0755 os-image/install-tor-browser /usr/local/bin/install-tor-browser
+RUN /usr/local/bin/install-tor-browser
 
 FROM ${UBUNTU_IMAGE} AS image
 ENV DEBIAN_FRONTEND=noninteractive
@@ -35,6 +89,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=appliance / /rootfs/
 COPY os-image/grub/grub.cfg /iso/boot/grub/grub.cfg
 RUN set -eu; mkdir -p /out /iso/casper; \
+    ln -sfn /etc/inkling2/resolv.conf /rootfs/etc/resolv.conf; \
     kernel=$(find /boot -maxdepth 1 -type f -name 'vmlinuz-*' | sort -V | tail -1); \
     test -n "$kernel"; version=$(basename "$kernel" | cut -c9-); \
     printf 'RESUME=none\n' > /etc/initramfs-tools/conf.d/inkling2-resume; \
@@ -50,13 +105,59 @@ RUN set -eu; mkdir -p /out /iso/casper; \
     dpkg-query --admindir=/rootfs/var/lib/dpkg -W -f='${Package}\t${Version}\n' > /out/linux-rootfs-packages.tsv; \
     dpkg-query -W -f='${Package}\t${Version}\n' "$KERNEL_PACKAGE" "linux-modules-$version" >> /out/linux-rootfs-packages.tsv
 
-FROM ${UBUNTU_IMAGE} AS verification
+FROM ${VERIFIER_IMAGE} AS verification-tools
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ovmf qemu-system-x86 python3 && rm -rf /var/lib/apt/lists/*
+    ovmf-generic qemu-system-x86 python3 ntfs-3g && rm -rf /var/lib/apt/lists/*
+
+# The verifier uses a QEMU release with the TCG user-mode IRET/SMAP fix.
+FROM verification-tools AS verification
 COPY --from=image /out/ /out/
 COPY os-image/verify-boot.py /usr/local/bin/verify-boot
 ENTRYPOINT ["python3", "/usr/local/bin/verify-boot"]
+
+FROM image AS disk-tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gdisk dosfstools e2fsprogs python3 && rm -rf /var/lib/apt/lists/*
+COPY os-image/installed-disk.py /usr/local/bin/installed_disk.py
+
+FROM disk-tools AS installed-build
+ARG INSTALL_DISK_BYTES
+RUN --mount=type=tmpfs,target=/tmp,size=3500m python3 /usr/local/bin/installed_disk.py --disk-bytes "$INSTALL_DISK_BYTES"
+
+FROM disk-tools AS private-disk-tools
+COPY --from=private-desktop-appliance / /rootfs/
+COPY --from=private-cuda / /rootfs/
+COPY --from=tor-browser /verified/tor-browser/ /rootfs/opt/inkling2-tor-browser/
+COPY --from=tor-browser /verified/SHA256SUMS /verified/*.asc /rootfs/usr/share/doc/inkling2-tor-browser/
+COPY os-image/net/tor.nftables.conf /private-tor.nft
+COPY --chmod=0755 os-image/inkling2-desktop /rootfs/usr/bin/inkling2-desktop
+COPY --chmod=0755 os-image/inkling2-desktop-session /rootfs/usr/lib/inkling2/desktop-session
+COPY os-image/inkling2-desktop.apparmor /rootfs/etc/apparmor.d/inkling2-desktop
+RUN set -eu; release=$(find /rootfs/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n'); \
+    test -f "/rootfs/lib/modules/$release/updates/inkling2/nvidia.ko"; \
+    apt-get update; mkdir /extra-kernel; cd /extra-kernel; \
+    apt-get download "linux-modules-extra-$release"; \
+    dpkg-deb --fsys-tarfile linux-modules-extra-*.deb | tar --keep-directory-symlink -x -C /rootfs; \
+    test -L /rootfs/lib; \
+    cd /; rm -rf /extra-kernel /var/lib/apt/lists/*; \
+    ln -sfn /etc/inkling2/resolv.conf /rootfs/etc/resolv.conf; \
+    cat /private-tor.nft >> /rootfs/etc/inkling2/nftables.conf; \
+    depmod -b /rootfs "$release"; \
+    modinfo -b /rootfs -k "$release" ntfs3 >/dev/null; \
+    modinfo -b /rootfs -k "$release" r8169 >/dev/null; \
+    chroot /rootfs /sbin/ldconfig; \
+    chroot /rootfs /usr/bin/ldd /usr/bin/inkling2-engine > /tmp/inkling2-ldd; \
+    cat /tmp/inkling2-ldd; ! grep -F 'not found' /tmp/inkling2-ldd
+ENTRYPOINT ["python3", "/usr/local/bin/installed_disk.py", "--with-model-volume"]
+
+FROM verification AS installed-verification
+COPY --from=installed-build /out/install/ /out/install/
+COPY os-image/installed-disk.py /usr/local/bin/installed_disk.py
+CMD ["--installed-bundle", "/out/install"]
+
+FROM scratch AS installed-artifact
+COPY --from=installed-build /out/install/ /
 
 FROM scratch AS artifact
 COPY --from=image /out/ /

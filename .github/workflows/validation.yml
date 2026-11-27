@@ -26,10 +26,10 @@ jobs:
 
   boot:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Build the boot-validation image
         run: docker build --file os-image/Dockerfile.iso-builder --target verification --tag inkling2-boot-check .
       - name: Check BIOS and UEFI on the candidate ISO
-        run: docker run --rm --network none --cpus 2 inkling2-boot-check
+        run: docker run --rm --network none --tmpfs /tmp:rw,nosuid,nodev,size=3500m inkling2-boot-check

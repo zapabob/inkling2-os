@@ -1,0 +1,33 @@
+#!/bin/sh
+# Fetch Tor Browser into the private appliance build after verifying the archive.
+set -eu
+
+version=16.0.3
+archive="tor-browser-linux-x86_64-$version.tar.xz"
+origin="https://dist.torproject.org/torbrowser/$version"
+fingerprint=EF6E286DDA85EA2A4BA7DE684E2C6E8793298290
+key_url=https://openpgpkey.torproject.org/.well-known/openpgpkey/torproject.org/hu/kounek7zrdx745qydx6p59t9mqjpuhdf
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+GNUPGHOME="$work/gnupg"
+export GNUPGHOME
+mkdir -m 0700 "$GNUPGHOME"
+cd "$work"
+
+fetch() {
+    curl --fail --silent --show-error --location --proto '=https' --retry 2 \
+        --connect-timeout 15 --max-time 240 --output "$2" "$1"
+}
+fetch "$key_url" signing.key
+fetch "$origin/$archive.asc" "$archive.asc"
+fetch "$origin/$archive" "$archive"
+gpg --batch --import signing.key
+gpg --batch --export "$fingerprint" > tor-browser-signing.gpg
+test -s tor-browser-signing.gpg
+gpgv --keyring "$work/tor-browser-signing.gpg" "$archive.asc" "$archive"
+
+install -d /verified
+tar --extract --xz --file "$archive" --directory /verified --no-same-owner
+test -x /verified/tor-browser/Browser/start-tor-browser
+sha256sum "$archive" > /verified/SHA256SUMS
+cp "$archive.asc" /verified/

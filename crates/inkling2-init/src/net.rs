@@ -1,7 +1,7 @@
 //! Network & Firewall Bring-Up for Inkling2-OS PID 1.
 //!
 //! Security & Reliability controls (`SOP-Internet-Connectivity` & `SOP-Security`):
-//! 1. Load default-deny inbound `nftables` ruleset BEFORE bringing up any external NIC.
+//! 1. Load default-deny `nftables` ruleset BEFORE bringing up any external NIC.
 //! 2. Bring up loopback (`lo`) and discover Ethernet (`eth*`/`en*`) or Wi-Fi (`wl*`) interfaces.
 //! 3. Acquire IP/DNS via DHCP with bounded timeout (never blocks boot indefinitely).
 //! 4. Sync system clock via NTP (`chronyd -q`) so TLS certificate verification succeeds.
@@ -71,7 +71,7 @@ pub fn init_network(policy: NetPolicy, mode: BootMode) -> NetReport {
     if mode == BootMode::DryRunSimulation {
         os_info!(
             "NetInit",
-            "[sim] nft -f /etc/inkling2/nftables.conf (default-deny inbound)"
+            "[sim] nft -f /etc/inkling2/nftables.conf (default-deny ingress and egress)"
         );
         os_info!(
             "NetInit",
@@ -105,7 +105,10 @@ pub fn init_network(policy: NetPolicy, mode: BootMode) -> NetReport {
         {
             Ok(s) if s.success() => {
                 firewall_loaded = true;
-                os_info!("NetInit", "Loaded default-deny inbound nftables firewall");
+                os_info!(
+                    "NetInit",
+                    "Loaded default-deny ingress and egress nftables firewall"
+                );
             }
             Ok(s) => os_warn!("NetInit", "nftables returned {s}"),
             Err(e) => os_warn!("NetInit", "nftables unavailable: {e}"),
@@ -132,6 +135,15 @@ pub fn init_network(policy: NetPolicy, mode: BootMode) -> NetReport {
         };
     }
 
+    // The installed appliance has no running udev daemon at this point.
+    if Path::new("/etc/inkling2/model-volume").is_file()
+        && !Command::new("/sbin/modprobe")
+            .arg("r8169")
+            .status()
+            .is_ok_and(|status| status.success())
+    {
+        os_warn!("NetInit", "Realtek RTL8168 Ethernet driver could not load");
+    }
     // 3. Discover NICs and configure DHCP / Wi-Fi
     let interfaces = discover_linux_nics();
     if interfaces.is_empty() {
@@ -159,7 +171,14 @@ pub fn init_network(policy: NetPolicy, mode: BootMode) -> NetReport {
             os_info!("NetInit", "Started wpa_supplicant on {nic}");
         }
         match Command::new("/sbin/dhcpcd")
-            .args(["--timeout", &timeout_str, "--background", nic])
+            .args([
+                "--timeout",
+                &timeout_str,
+                "--background",
+                "--nohook",
+                "resolv.conf",
+                nic,
+            ])
             .status()
         {
             Ok(s) if s.success() => os_info!("NetInit", "DHCP started on {nic}"),
@@ -168,18 +187,12 @@ pub fn init_network(policy: NetPolicy, mode: BootMode) -> NetReport {
         }
     }
 
-    // Ensure fallback DNS resolvers exist if DHCP did not populate resolv.conf
-    if !Path::new("/etc/resolv.conf").exists() {
-        let _ = fs::write(
-            "/etc/resolv.conf",
-            "nameserver 1.1.1.1\nnameserver 9.9.9.9\n",
-        );
-    }
-
     // 4. Sync clock via NTP for TLS certificate verification
     let mut ntp_synced = false;
     if policy.sync_ntp_for_tls
-        && let Ok(s) = Command::new("/usr/sbin/chronyd").arg("-q").status()
+        && let Ok(s) = Command::new("/usr/sbin/chronyd")
+            .args(["-q", "-u", "root", "-t", "10"])
+            .status()
     {
         ntp_synced = s.success();
     }

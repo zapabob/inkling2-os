@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+# Invoked by the local session's launcher. Every entry uses a fixed executable.
+case "${1:-}" in
+    chat|finder|browser)
+        exec epiphany-browser --private-instance "http://127.0.0.1:8080/#$1"
+        ;;
+    terminal)
+        exec xterm -T 'Inkling2 Terminal'
+        ;;
+    tor)
+        exec timeout 2 /bin/sh -c 'printf "%s\n" open > /run/inkling2-desktop/tor-launch'
+        ;;
+    system)
+        exec xterm -T 'Inkling2 System Information' -hold -e /bin/sh -c '
+            uname -srmo
+            grep -E "^(MemTotal|MemAvailable):" /proc/meminfo
+            df -h / /models
+            printf "\nGPU reported by Inkling2\n"
+            curl --disable --noproxy "*" --fail --silent --show-error --max-time 5 +                http://127.0.0.1:8080/v1/gpu/info
+            printf "\n"
+        '
+        ;;
+    *)
+        printf '%s\n' 'Expected chat, finder, browser, tor, terminal or system.' >&2
+        exit 2
+        ;;
+esac

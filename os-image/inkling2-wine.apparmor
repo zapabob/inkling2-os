@@ -1,0 +1,6 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+profile inkling2-wine-bwrap /usr/lib/inkling2/wine-bwrap flags=(unconfined) {
+    userns,
+}

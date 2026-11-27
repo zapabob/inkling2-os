@@ -1,0 +1,60 @@
+#!/bin/sh
+# Run Win64 software in the appliance's offline compatibility environment.
+set -eu
+
+operator_uid=61001
+apps=/var/lib/inkling2/wine-apps
+prefix=/run/inkling2-wine
+loader=/usr/lib/wine/wine64
+wine_debug=-all
+
+if [ "$(/usr/bin/id -u)" != "$operator_uid" ]; then
+    printf '%s\n' 'Run Wine as the Inkling2 console user.' >&2
+    exit 1
+fi
+
+case "${1:-}" in
+    --version) set -- --version ;;
+    --check)
+        wine_debug=-all,err+all
+        set -- cmd.exe /c echo INKLING2_WINE_OK
+        ;;
+    run)
+        shift
+        case "${1:-}" in
+            *[!a-zA-Z0-9._-]* | .* | '') printf '%s\n' 'Expected a filename in the Wine application directory.' >&2; exit 2 ;;
+            *.exe) ;;
+            *) printf '%s\n' 'Expected a Windows .exe filename.' >&2; exit 2 ;;
+        esac
+        if [ ! -f "$apps/$1" ] || [ -L "$apps/$1" ]; then
+            printf '%s\n' 'The Windows application is unavailable.' >&2
+            exit 2
+        fi
+        application=$1
+        shift
+        set -- "/apps/$application" "$@"
+        ;;
+    *)
+        printf '%s\n' 'Usage: wine-inkling2 --version | --check | run APP.exe [ARGS...]' >&2
+        exit 2
+        ;;
+esac
+
+exec /usr/lib/inkling2/wine-bwrap --unshare-all --new-session --die-with-parent --clearenv \
+    --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
+    --ro-bind /etc/passwd /etc/passwd --ro-bind /etc/ld.so.cache /etc/ld.so.cache \
+    --ro-bind /etc/fonts /etc/fonts --ro-bind /etc/alternatives /etc/alternatives \
+    --ro-bind "$apps" /apps --bind "$prefix" /wine --tmpfs /tmp \
+    --perms 1777 --dir /tmp/.X11-unix --dev /dev --proc /proc \
+    --setenv PATH /usr/lib/wine:/usr/bin --setenv HOME /wine --setenv WINEPREFIX /wine/prefix \
+    --setenv XDG_CACHE_HOME /tmp --setenv WINEARCH win64 \
+    --setenv WINEDLLOVERRIDES 'mscoree,mshtml=' --setenv WINEDEBUG "$wine_debug" \
+    --chdir /apps -- /bin/sh -c '
+        /usr/bin/xvfb-run --auto-servernum --error-file=/tmp/xvfb.log \
+            --server-args="-screen 0 640x480x24 -nolisten tcp" "$@"
+        status=$?
+        if [ "$status" -ne 0 ] && [ -r /tmp/xvfb.log ]; then
+            cat /tmp/xvfb.log >&2
+        fi
+        exit "$status"
+    ' wine-display "$loader" "$@"

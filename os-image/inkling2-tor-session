@@ -1,0 +1,14 @@
+#!/bin/sh
+# Receive one fixed launch action from the local console account.
+set -eu
+
+browser="$HOME/tor-browser"
+while IFS= read -r request < /run/inkling2-desktop/tor-launch; do
+    [ "$request" = open ] || continue
+    if [ ! -x "$browser/Browser/start-tor-browser" ]; then
+        staging=$(mktemp -d "$HOME/install.XXXXXX")
+        cp -R /opt/inkling2-tor-browser/. "$staging/"
+        mv -T "$staging" "$browser"
+    fi
+    dbus-run-session -- "$browser/Browser/start-tor-browser" || :
+done

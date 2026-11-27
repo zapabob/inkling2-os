@@ -1,0 +1,5 @@
+/os-image/wine-inkling2 text eol=lf
+/os-image/inkling2-desktop* text eol=lf
+/os-image/desktop/* text eol=lf
+/os-image/install-tor-browser text eol=lf
+/os-image/inkling2-tor-session text eol=lf

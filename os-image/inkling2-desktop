@@ -1,0 +1,42 @@
+#!/bin/sh
+# Start the private appliance's local display after the loopback console is ready.
+set -eu
+
+runtime=/run/inkling2-desktop
+install -d -m 0755 -o root -g root "$runtime"
+install -d -m 0700 -o 61001 -g 61001 "$runtime/user"
+install -d -m 0700 -o 61001 -g 61001 /var/lib/inkling2/desktop-state
+export XAUTHORITY="$runtime/Xauthority"
+umask 077
+touch "$XAUTHORITY"
+cookie=$(mcookie)
+xauth -q -f "$XAUTHORITY" add :0 MIT-MAGIC-COOKIE-1 "$cookie"
+chown root:61001 "$XAUTHORITY"
+chmod 0640 "$XAUTHORITY"
+
+if [ -x /opt/inkling2-tor-browser/Browser/start-tor-browser ]; then
+    tor_authority="$runtime/tor.Xauthority"
+    touch "$tor_authority"
+    xauth -q -f "$tor_authority" add :0 MIT-MAGIC-COOKIE-1 "$cookie"
+    chown root:61003 "$tor_authority"
+    chmod 0640 "$tor_authority"
+    install -d -m 0700 -o 61003 -g 61003 "$runtime/tor-user" /var/lib/inkling2/tor-state
+    mkfifo -m 0620 "$runtime/tor-launch"
+    chown 61003:61001 "$runtime/tor-launch"
+    DISPLAY=:0 XAUTHORITY="$tor_authority" HOME=/var/lib/inkling2/tor-state \
+        XDG_RUNTIME_DIR="$runtime/tor-user" LANG=C.UTF-8 \
+        setpriv --reuid=61003 --regid=61003 --clear-groups --no-new-privs \
+        /usr/lib/inkling2/tor-session &
+fi
+
+for module in bochs evdev usbhid nvidia_drm; do
+    modprobe "$module" || :
+done
+
+# Xorg uses the udev database to discover seats and input devices without systemd-logind.
+/usr/lib/systemd/systemd-udevd --daemon
+udevadm trigger --action=add --subsystem-match=input --subsystem-match=drm
+udevadm settle --timeout=10
+
+exec xinit /usr/bin/setpriv --reuid=61001 --regid=61001 --clear-groups --no-new-privs \
+    /usr/lib/inkling2/desktop-session -- /usr/lib/xorg/Xorg :0 vt1 -nolisten tcp -auth "$XAUTHORITY"

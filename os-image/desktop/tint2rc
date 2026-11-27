@@ -1,0 +1,12 @@
+panel_items = L
+panel_position = bottom center horizontal
+panel_size = 100% 44
+panel_layer = top
+launcher_icon_size = 28
+launcher_tooltip = 1
+launcher_item_app = /usr/share/applications/inkling2-chat.desktop
+launcher_item_app = /usr/share/applications/inkling2-finder.desktop
+launcher_item_app = /usr/share/applications/inkling2-browser.desktop
+launcher_item_app = /usr/share/applications/inkling2-tor.desktop
+launcher_item_app = /usr/share/applications/inkling2-terminal.desktop
+launcher_item_app = /usr/share/applications/inkling2-system.desktop

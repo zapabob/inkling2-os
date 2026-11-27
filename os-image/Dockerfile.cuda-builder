@@ -1,0 +1,96 @@
+# syntax=docker/dockerfile:1
+ARG UBUNTU_IMAGE=ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+
+FROM ${UBUNTU_IMAGE} AS cuda-repo
+ENV DEBIAN_FRONTEND=noninteractive
+ADD --checksum=sha256:d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb /tmp/cuda-keyring.deb
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates /tmp/cuda-keyring.deb \
+    && rm /tmp/cuda-keyring.deb && rm -rf /var/lib/apt/lists/*
+
+FROM cuda-repo AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake g++ libssl-dev liburing-dev ninja-build pkg-config \
+    cuda-nvcc-13-5=13.5.37-1 cuda-cudart-dev-13-5=13.5.37-1 cuda-cccl-13-5 \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH=/usr/local/cuda-13.5/bin:$PATH
+WORKDIR /engine
+COPY --from=engine CMakeLists.txt ./
+COPY --from=engine include/ include/
+COPY --from=engine src/ src/
+COPY --from=engine tests/ tests/
+RUN cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCUDAToolkit_ROOT=/usr/local/cuda-13.5 \
+    && cmake --build /build --parallel 2 \
+    && cmake --install /build --prefix /out \
+    && install -m 0755 /build/inkling2-tests /out/bin/inkling2-tests \
+    && ldd /out/bin/inkling2-engine
+
+FROM scratch AS engine-artifact
+COPY --from=build /out/ /
+
+FROM cuda-repo AS nvidia-runtime
+ARG KERNEL_RELEASE=6.8.0-151-generic
+ARG NVIDIA_VERSION=620.73.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    "linux-headers-${KERNEL_RELEASE}" curl gcc make kmod xz-utils libelf-dev \
+    && mkdir -p /runtime-debs /out/rootfs \
+    && cd /runtime-debs \
+    && apt-get download cuda-cudart-13-5=13.5.37-1 liburing2 \
+    && for package in ./*.deb; do dpkg-deb -x "$package" /out/rootfs; done \
+    && rm -rf /runtime-debs /var/lib/apt/lists/*
+RUN --mount=type=tmpfs,target=/scratch,size=4g set -eu; cd /scratch; \
+    curl --fail --silent --show-error --location --proto '=https' \
+        https://download.nvidia.com/XFree86/Linux-x86_64/620.73.04/NVIDIA-Linux-x86_64-620.73.04.run -o nvidia.run; \
+    echo 'b5f2e2d5da8435b32539304015b89bf7eb22fe0aec8cd6905b7a6e8a9f9b8f1b  nvidia.run' | sha256sum --check; \
+    sh nvidia.run --extract-only --target /scratch/driver; cd /scratch/driver; \
+    make -C kernel-open -j 2 KERNEL_UNAME="${KERNEL_RELEASE}" \
+        SYSSRC="/usr/src/linux-headers-${KERNEL_RELEASE}" \
+        SYSOUT="/usr/src/linux-headers-${KERNEL_RELEASE}" modules; \
+    library_dir=/out/rootfs/usr/lib/x86_64-linux-gnu; \
+    module_dir="/out/rootfs/usr/lib/modules/${KERNEL_RELEASE}/updates/inkling2"; \
+    firmware_dir="/out/rootfs/usr/lib/firmware/nvidia/${NVIDIA_VERSION}"; \
+    install -d "$module_dir" "$firmware_dir" "$library_dir"; \
+    for module in nvidia nvidia-uvm nvidia-modeset nvidia-drm; do \
+        file="kernel-open/${module}.ko"; \
+        test "$(modinfo -F version "$file")" = "$NVIDIA_VERSION"; \
+        test "$(modinfo -F vermagic "$file" | cut -d ' ' -f1)" = "$KERNEL_RELEASE"; \
+        install -m 0644 "$file" "$module_dir"; \
+    done; \
+    install -m 0644 firmware/gsp_*.bin "$firmware_dir"; \
+    for stem in libcuda libnvidia-ml libnvidia-ptxjitcompiler libnvidia-nvvm libnvidia-gpucomp; do \
+        file="${stem}.so.${NVIDIA_VERSION}"; \
+        install -m 0644 "$file" "$library_dir"; \
+        soname=$(readelf -d "$file" | sed -n 's/.*(SONAME).*\[\(.*\)\].*/\1/p'); \
+        if [ -n "$soname" ] && [ "$soname" != "$file" ]; then ln -s "$file" "$library_dir/$soname"; fi; \
+    done; \
+    install -D -m 0755 nvidia-smi /out/rootfs/usr/bin/nvidia-smi; \
+    install -D -m 0755 nvidia-modprobe /out/rootfs/usr/bin/nvidia-modprobe; \
+    install -D -m 0644 LICENSE /out/rootfs/usr/share/doc/inkling2-nvidia/LICENSE; \
+    install -d /out/rootfs/etc/modprobe.d /out/rootfs/etc/ld.so.conf.d; \
+    printf 'blacklist nouveau\noptions nvidia NVreg_DeviceFileUID=0 NVreg_DeviceFileGID=61000 NVreg_DeviceFileMode=0660\n' \
+        > /out/rootfs/etc/modprobe.d/inkling2-nvidia.conf; \
+    printf '%s\n' /usr/local/cuda-13.5/targets/x86_64-linux/lib > /out/rootfs/etc/ld.so.conf.d/inkling2-cuda.conf
+
+FROM nvidia-runtime AS nvidia-display
+RUN --mount=type=tmpfs,target=/scratch,size=4g set -eu; cd /scratch; \
+    curl --fail --silent --show-error --location --proto '=https' \
+        https://download.nvidia.com/XFree86/Linux-x86_64/620.73.04/NVIDIA-Linux-x86_64-620.73.04.run -o nvidia.run; \
+    echo 'b5f2e2d5da8435b32539304015b89bf7eb22fe0aec8cd6905b7a6e8a9f9b8f1b  nvidia.run' | sha256sum --check; \
+    sh nvidia.run --extract-only --target /scratch/driver; cd /scratch/driver; \
+    library_dir=/out/rootfs/usr/lib/x86_64-linux-gnu; \
+    for stem in libGLX_nvidia libEGL_nvidia libnvidia-allocator libnvidia-cfg libnvidia-eglcore \
+        libnvidia-glcore libnvidia-glsi libnvidia-tls; do \
+        file="${stem}.so.${NVIDIA_VERSION}"; \
+        install -m 0644 "$file" "$library_dir"; \
+        soname=$(readelf -d "$file" | sed -n 's/.*(SONAME).*\[\(.*\)\].*/\1/p'); \
+        if [ -n "$soname" ] && [ "$soname" != "$file" ]; then ln -s "$file" "$library_dir/$soname"; fi; \
+    done; \
+    xorg_dir=/out/rootfs/usr/lib/xorg/modules; \
+    install -D -m 0644 nvidia_drv.so "$xorg_dir/drivers/nvidia_drv.so"; \
+    install -D -m 0644 "libglxserver_nvidia.so.${NVIDIA_VERSION}" "$xorg_dir/extensions/libglxserver_nvidia.so.${NVIDIA_VERSION}"; \
+    ln -s "libglxserver_nvidia.so.${NVIDIA_VERSION}" "$xorg_dir/extensions/libglxserver_nvidia.so"; \
+    install -D -m 0644 nvidia-drm-outputclass.conf /out/rootfs/usr/share/X11/xorg.conf.d/10-nvidia.conf; \
+    printf 'options nvidia_drm modeset=1\n' >> /out/rootfs/etc/modprobe.d/inkling2-nvidia.conf
+
+FROM scratch AS private-cuda-runtime
+COPY --from=nvidia-display /out/rootfs/ /
+COPY --from=build /out/bin/inkling2-engine /usr/bin/inkling2-engine

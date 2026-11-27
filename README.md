@@ -8,7 +8,7 @@ Inkling2-OS is a native Linux appliance and Windows console for SC117 Inkling-2-
 | Verified | Windows console, key-free browser and Finder, scoped API and Strata 0.8.6 provider registration. Windows SQ-10, SQ-15 and SQ-20 generated the expected digit and stopped on the arithmetic fixture. Earlier diagnostic media passed QEMU BIOS and UEFI boot. |
 | Experimental | Short text inference using the standalone Windows engine's stdin protocol. The OpenAI-compatible event stream emits the answer once generation finishes. |
 | Pending qualification | Physical Linux CUDA inference, 65,536 and 131,072 token contexts, and matched hardware benchmarks. |
-| In development | USB image with the Linux CUDA executable, NVIDIA modules and a private model volume. |
+| Private Linux USB | UEFI installation with the Linux CUDA engine, NVIDIA modules, a local graphical console and an offline model volume. See the validation record for the checks run on this image. |
 
 ## Windows console
 
@@ -41,15 +41,23 @@ The image builds RustXNG v0.32.0 from the pinned [GitLab mirror](https://gitlab.
 
 The launcher validates the upstream `full` profile before starting it. Pass `-Config` for a local RustXNG TOML or YAML override. The appliance reads an optional root-managed `/etc/inkling2/rustxng.toml` and otherwise uses the bundled profile. Enabled web providers receive the search query. Providers that require credentials are available only when explicitly configured. Database engine extensions are omitted from the appliance build.
 
-## Linux ISO
+## Linux diagnostic ISO
 
-Run `./os-image/build-iso.ps1` on an amd64 build host. The resulting live image boots directly on the target machine without Docker. The live image uses memory-backed state and does not include NVIDIA binaries, model weights, or a persistent disk installer.
+Run `./os-image/build-iso.ps1` on an amd64 build host. The live ISO boots directly on the target machine without Docker. It uses memory-backed state and provides a terminal with the diagnostic console service. NVIDIA binaries and SC117 weights are supplied separately for private installations.
 
-The `installed-artifact` build target in `os-image/Dockerfile.iso-builder` produces a separate, size-specific disk bundle. Set `INSTALL_DISK_BYTES` to the target's exact byte capacity. The bundle boots in UEFI from its EFI partition and uses a writable ext4 root. The Windows writer at `scripts/write-installed-usb.ps1` checks the target identity and bundle hashes before replacing the partition table, then reads back every written region. `-CheckOnly` performs the checks without administrator access.
+## Private Linux USB
 
-For a private inference USB, `os-image/Dockerfile.cuda-builder` builds the Linux engine, CUDA 13.5 runtime and kernel-matched NVIDIA driver. The `private-disk-tools` target incorporates that runtime and adds a model partition. The writer streams the original `.strata` and `tokenizer.json` directly from their existing drive to the USB, then verifies both files there. Linux mounts that volume read-only for the inference account. This path needs disk space for the OS bundle and build caches only. The weights stay in the private installation.
+The appliance signs in the local console account on tty1 once the bridge is ready. The desktop launcher opens Inkling2 Chat, Finder, Browser, Terminal and System Information. The browser opens `http://127.0.0.1:8080/` without an API key. Browser opens mediated public HTTPS documents and uses RustXNG Full for search. Finder previews approved files under `/var/lib/inkling2/files` through the broker. The graphical session runs as the local console user and can reach the loopback bridge. The AI bridge stays available when the browser window closes.
 
-Both images include Wine for 64-bit Windows command-line programs. At the physical console use Ctrl+Alt+F2 to open the unprivileged Inkling2 terminal. Stage approved executables in `/var/lib/inkling2/wine-apps`, then run `wine-inkling2 run PROGRAM.exe` from the terminal. Wine uses a private prefix and runs without network access. The installed disk persists the prefix and service state under `/var/lib/inkling2`.
+The **Tor Browser** launcher opens the native [Tor Project release](https://blog.torproject.org/new-release-tor-browser-1603/) in its own Linux account and uses the upstream default profile. The build verifies the Linux archive against the pinned [Tor Browser Developers key](https://support.torproject.org/tor-browser/getting-started/verifying-tor-browser/). Tor Browser operates independently of Inkling2 Browser and Finder.
+
+On the build host, `os-image/Dockerfile.cuda-builder` builds the Linux engine for CUDA 13.5 `sm_120a` and the NVIDIA modules for the appliance kernel. The `private-disk-tools` target stages the driver and graphical session. The disk bundle uses the target's exact byte capacity and contains a UEFI system partition, a persistent ext4 root and a 48 GiB model partition. The Windows writer requests the matching disk identity and verified bundle hashes before replacing the partition table, and reads back its written regions.
+
+The writer streams the original SQ-10, SQ-15, SQ-20 and their shared `tokenizer.json` directly from other physical drives, then verifies all four files on the USB. The appliance mounts the model partition read-only with the Linux NTFS3 driver and grants read access to the inference account. `-CheckOnly` performs the source checks without administrator access. Use the machine's UEFI boot menu to launch the installed USB.
+
+The private appliance enables resident inference. When the GPU and bundled SQ-10 are present, the bridge starts loading SQ-10 in the background while the desktop opens. Selecting another model switches the resident model.
+
+Both Linux images include Wine for 64-bit Windows command-line programs. At the physical console use Ctrl+Alt+F2 to open the unprivileged Inkling2 terminal. Stage approved executables in `/var/lib/inkling2/wine-apps`, then run `wine-inkling2 run PROGRAM.exe` from the terminal. Wine uses a separate display, an isolated network namespace and its own prefix. The installed disk persists the prefix and service state in `/var/lib/inkling2`.
 
 ## Paired qualification and release
 

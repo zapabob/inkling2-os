@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Web
+Exec=inkling2-desktop-launch browser
+Icon=web-browser

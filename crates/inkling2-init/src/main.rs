@@ -20,6 +20,35 @@ use boot::{BootMode, run_early_boot};
 use gpu_guard::{GpuPolicy, apply_gpu_policy, compute_tier_plan};
 use net::{NetPolicy, init_network};
 
+#[cfg(target_os = "linux")]
+fn prepare_gpu_devices() -> std::io::Result<()> {
+    use std::fs::{self, Permissions};
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt, chown};
+    use std::path::Path;
+
+    let helper = "/usr/bin/nvidia-modprobe";
+    if !Path::new(helper).is_file() || !Path::new("/sys/module/nvidia").exists() {
+        return Ok(());
+    }
+    for args in [&["-c", "0"][..], &["-u"][..]] {
+        if !process::Command::new(helper).args(args).status()?.success() {
+            return Err(std::io::Error::other("NVIDIA device registration failed"));
+        }
+    }
+    for device in [
+        "/dev/nvidia0",
+        "/dev/nvidiactl",
+        "/dev/nvidia-uvm",
+        "/dev/nvidia-uvm-tools",
+    ] {
+        if fs::symlink_metadata(device).is_ok_and(|entry| entry.file_type().is_char_device()) {
+            chown(device, Some(0), Some(61000))?;
+            fs::set_permissions(device, Permissions::from_mode(0o660))?;
+        }
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let dry_run = args.iter().any(|a| a == "--dry-run" || a == "--simulate")
@@ -71,6 +100,10 @@ fn main() -> ExitCode {
             "Root filesystem active: {root_type}; PID={}",
             process::id()
         );
+        #[cfg(target_os = "linux")]
+        if let Err(error) = prepare_gpu_devices() {
+            os_warn!("PID1", "CUDA device setup failed: {error}");
+        }
         let gpu = process::Command::new("/usr/bin/nvidia-smi")
             .args([
                 "--query-gpu=name,memory.free,memory.total",
@@ -120,7 +153,7 @@ fn main() -> ExitCode {
     }
 
     #[cfg(target_os = "linux")]
-    supervisor::supervise();
+    supervisor::supervise(net_rep.firewall_loaded);
     #[cfg(not(target_os = "linux"))]
     ExitCode::FAILURE
 }
