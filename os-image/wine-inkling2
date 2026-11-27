@@ -50,6 +50,19 @@ exec /usr/lib/inkling2/wine-bwrap --unshare-all --new-session --die-with-parent 
     --setenv XDG_CACHE_HOME /tmp --setenv WINEARCH win64 \
     --setenv WINEDLLOVERRIDES 'mscoree,mshtml=' --setenv WINEDEBUG "$wine_debug" \
     --chdir /apps -- /bin/sh -c '
+        if [ "${2:-}" != --version ]; then
+            (
+                set -eu
+                /usr/bin/flock -x 9
+                if [ ! -e "$WINEPREFIX" ]; then
+                    stage=$(/usr/bin/mktemp -d /wine/.prefix.XXXXXX)
+                    trap '"'"'/usr/bin/rm -rf -- "$stage"'"'"' EXIT
+                    /usr/bin/tar -xzf /usr/share/inkling2/wine-prefix.tar.gz \
+                        --no-same-owner --no-same-permissions -C "$stage"
+                    /usr/bin/mv -T "$stage/prefix" "$WINEPREFIX"
+                fi
+            ) 9>/wine/.inkling2-init.lock || exit "$?"
+        fi
         /usr/bin/xvfb-run --auto-servernum --error-file=/tmp/xvfb.log \
             --server-args="-screen 0 640x480x24 -nolisten tcp" "$@"
         status=$?

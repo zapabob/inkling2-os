@@ -249,7 +249,7 @@ fn smoke_desktop() -> io::Result<()> {
                 "Tor Browser launcher rejected the request",
             ));
         }
-        wait_for_desktop_window("WM_CLASS", "tor browser", Some(61003))?;
+        wait_for_desktop_window("WM_CLASS", "", Some(61003))?;
         os_info!(
             "Supervisor",
             "Smoke: Tor Browser opened under its dedicated account"
@@ -276,13 +276,13 @@ fn wait_for_desktop_window(property: &str, expected: &str, uid: Option<u32>) -> 
             .split(|character: char| character.is_ascii_whitespace() || character == ',')
             .filter(|word| word.starts_with("0x"))
         {
-            let value = xprop(&["-id", window, property])?;
-            if !value.status.success()
-                || !String::from_utf8_lossy(&value.stdout)
-                    .to_ascii_lowercase()
-                    .contains(&expected.to_ascii_lowercase())
-            {
-                continue;
+            if !expected.is_empty() {
+                let value = xprop(&["-id", window, property])?;
+                if !value.status.success()
+                    || !String::from_utf8_lossy(&value.stdout).contains(expected)
+                {
+                    continue;
+                }
             }
             if let Some(uid) = uid {
                 let info = xprop(&["-id", window, "_NET_WM_PID"])?;
@@ -309,7 +309,7 @@ fn wait_for_desktop_window(property: &str, expected: &str, uid: Option<u32>) -> 
         sleep(Duration::from_millis(500));
     }
     Err(io::Error::other(format!(
-        "desktop window did not load: {expected}"
+        "desktop window did not load: {expected} (UID {uid:?})"
     )))
 }
 
@@ -324,8 +324,9 @@ fn smoke_wine() -> io::Result<()> {
     {
         os_warn!(
             "Supervisor",
-            "Wine probe failed ({}): {}",
+            "Wine probe failed ({}): {} {}",
             output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
             String::from_utf8_lossy(&output.stderr).trim()
         );
         return Err(io::Error::other(

@@ -26,12 +26,32 @@ RUN git clone --depth 1 --branch v0.32.0 https://gitlab.com/sahenjp/rustxng-mirr
     && target/release/rustxng --profile full --check-config
 RUN git archive --format=tar.gz --prefix=rustxng-0.32.0/ --output=/search/rustxng-0.32.0-source.tar.gz HEAD
 
-FROM ${UBUNTU_IMAGE} AS appliance
+FROM ${UBUNTU_IMAGE} AS appliance-packages
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl iproute2 kmod nftables mount util-linux \
     dhcpcd-base wpasupplicant chrony apparmor bubblewrap wine64 xvfb xauth ntfs-3g \
     && rm -rf /var/lib/apt/lists/*
+
+FROM appliance-packages AS wine-prefix
+RUN --network=none --mount=type=tmpfs,target=/wine,size=1400m set -eu; \
+    groupadd --gid 61001 inkling2-console; \
+    useradd --uid 61001 --gid 61001 --no-create-home --home-dir /wine inkling2-console; \
+    install -d -m 0700 -o 61001 -g 61001 /wine; \
+    install -d -m 1777 /tmp/.X11-unix; \
+    setpriv --reuid=61001 --regid=61001 --clear-groups --no-new-privs \
+        env HOME=/wine WINEPREFIX=/wine/prefix WINEARCH=win64 \
+        WINEDLLOVERRIDES='mscoree,mshtml=' WINEDEBUG=-all \
+        xvfb-run --auto-servernum /bin/sh -ec ' \
+            /usr/lib/wine/wine64 wineboot.exe --init; \
+            /usr/lib/wine/wineserver64 -w; \
+            /usr/lib/wine/wine64 cmd.exe /c echo INKLING2_WINE_TEMPLATE_OK; \
+            /usr/lib/wine/wineserver64 -w' > /tmp/wine-prefix.log; \
+    grep -F INKLING2_WINE_TEMPLATE_OK /tmp/wine-prefix.log; \
+    install -d /out; tar -C /wine -czf /out/wine-prefix.tar.gz prefix
+
+FROM appliance-packages AS appliance
+COPY --from=wine-prefix /out/wine-prefix.tar.gz /usr/share/inkling2/
 COPY --from=rust-build /compiled/inkling2-init /sbin/inkling2-init
 COPY --from=rust-build /compiled/inkling2-shell /usr/bin/inkling2-shell
 COPY --from=search-build /search/target/release/rustxng /usr/bin/rustxng
