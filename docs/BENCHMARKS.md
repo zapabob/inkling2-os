@@ -1,6 +1,10 @@
 # Benchmarks
 
+The operator reported a v0.1.0 real-model `bench 16` run through 48 logical layers. The timed decode took 2.61 seconds for 16 tokens (reported 6.14 tokens/s). Placement put 2,296 experts in VRAM (about 6 GiB) and 776 in pinned RAM (about 2 GiB). The counters were 4,352 VRAM hits, 2,176 pinned-RAM DMA hits and zero direct storage reads during decode. Cold loading took about 6.5 minutes, including roughly 5 minutes 20 seconds to populate VRAM with experts. The timing comes from the operator's report. The benchmark exercises the decode path and does not establish chat correctness or a throughput result for v0.1.1.
+
 Windows reported roughly 3.0–3.4 GiB free of 16,311 MiB during the initial Strata workload. Admission rejected the request before the standalone engine started. A later run, with enough free VRAM, returned an eight-token response after 91.46 seconds including model load. The repeated punctuation failed the correctness check. Throughput, per-token latency, power and long-context results require further measurement.
+
+On Windows, the SC117 SQ-15 fixed-input test used 16 positions, 4,096 MiB of expert VRAM budget, 1,024 MiB of host budget, and 256 MiB per storage cache. Two runs per mode produced 1.01–1.16 positions/s with eager Q8_ROW, 0.61–1.13 with projection graphs, and 0.85–1.14 with graphs plus INT8 Tensor Cores. All modes returned the same 16 argmax IDs on these fixed inputs. Autoregressive continuation from token 1 diverged with the INT8 option. Keep both switches optional. A cold-read-heavy greedy SQ-15 run registered 477 NVMe, 305 SATA and 268 USB scratch hits, along with 1,851 original-weight reads. These rates include storage traffic and come from a shared Windows workstation.
 
 Run `scripts/benchmark-native-api.ps1` with the actual model ID, a UTF-8 prompt file and a new output path. It records per-run wall time, the pre-run GPU observation and HTTP errors. The adapter currently returns complete results, so this measures round-trip time. TTFT, output token rate and per-token latency need an engine that exposes those measurements.
 

@@ -3,7 +3,7 @@
 //! Designed for Meta Muse.ai VM <-> Inkling2-OS encrypted SSH tunnel (`VM:18080 -> PC:8080`).
 //! Security controls (`SOP-Security`):
 //! - Strictly binds to loopback (`127.0.0.1:<port>` only; refuses non-loopback bind addresses)
-//! - Scoped Bearer token auth via `INKLING2_BRIDGE_TOKEN` for all POST endpoints
+//! - Local console mode or scoped Bearer authentication for tunneled deployment
 //! - Strictly typed, allowlisted endpoints (NO arbitrary shell execution endpoint)
 //! - Bounded request body size (256 KiB max)
 
@@ -27,7 +27,7 @@ use inkling2_companion::voice_call::{VoicePersona, speak_text};
 use crate::hardened_fs::{list_jailed_dir, read_jailed_file};
 use crate::http_request::{bearer_matches, read_request};
 use crate::native_inference;
-use crate::public_browser::fetch_public_https;
+use crate::public_browser::{fetch_public_https, render_document};
 use crate::strata_catalog::discover_models;
 
 const MAX_CONNECTIONS: usize = 16;
@@ -115,6 +115,8 @@ pub struct BridgeContext {
     pub voice: VoicePersona,
     bearer_token: Option<String>,
     inference_token: Option<String>,
+    local_console: bool,
+    search_port: Option<u16>,
     preview_dir: Option<Dir>,
     model_listing: Option<Dir>,
     active_connections: AtomicUsize,
@@ -174,15 +176,16 @@ fn send_asset(stream: &mut TcpStream, mime: &str, html_body: &str) {
     let _ = stream.flush();
 }
 
-fn send_sse_completion(stream: &mut TcpStream, model: &str, content: &str) {
+fn send_sse_completion(stream: &mut TcpStream, model: &str, reply: &native_inference::NativeReply) {
     let chunk1 = format!(
         "data: {{\"id\":\"chatcmpl-inkling2\",\"object\":\"chat.completion.chunk\",\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"{}\"}},\"finish_reason\":null}}]}}\n\n",
         json_escape(model),
-        json_escape(content)
+        json_escape(&reply.text)
     );
     let chunk2 = format!(
-        "data: {{\"id\":\"chatcmpl-inkling2\",\"object\":\"chat.completion.chunk\",\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"length\"}}]}}\n\n",
-        json_escape(model)
+        "data: {{\"id\":\"chatcmpl-inkling2\",\"object\":\"chat.completion.chunk\",\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"{}\"}}]}}\n\n",
+        json_escape(model),
+        reply.finish
     );
     let payload = format!("{chunk1}{chunk2}data: [DONE]\n\n");
     let resp = format!(
@@ -376,7 +379,8 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
     };
     let method = req.method.as_str();
     let path = req.path.as_str();
-    let console_auth = bearer_matches(req.auth.as_deref(), ctx.bearer_token.as_deref());
+    let console_auth =
+        ctx.local_console || bearer_matches(req.auth.as_deref(), ctx.bearer_token.as_deref());
     let inference_auth = bearer_matches(req.auth.as_deref(), ctx.inference_token.as_deref());
     let public = matches!(
         (method, path),
@@ -418,7 +422,8 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
             send_json(
                 &mut stream,
                 "200 OK",
-                &json!({"upstream": ctx.upstream.is_some(), "experimental_lora": ctx.experimental_lora}).to_string(),
+                &json!({"upstream": ctx.upstream.is_some(), "experimental_lora": ctx.experimental_lora,
+                    "web_search": ctx.search_port.is_some()}).to_string(),
             );
         }
         ("GET", "/v1/gpu/info") => {
@@ -445,7 +450,9 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
             }
         }
         ("GET", "/health") => {
-            let mode = if ctx.bearer_token.is_some() {
+            let mode = if ctx.local_console {
+                "local"
+            } else if ctx.bearer_token.is_some() {
                 "locked"
             } else {
                 "preview"
@@ -664,12 +671,43 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                 ),
             }
         }
+        ("POST", "/v1/net/search") => {
+            let Some(port) = ctx.search_port else {
+                send_error(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    "RustXNG is not configured",
+                );
+                return;
+            };
+            let Some(query) = body["query"]
+                .as_str()
+                .filter(|query| crate::web_search::valid_query(query))
+            else {
+                send_error(
+                    &mut stream,
+                    "400 Bad Request",
+                    "enter a search query of up to 512 bytes",
+                );
+                return;
+            };
+            match crate::web_search::search(port, query) {
+                Ok(results) => send_json(&mut stream, "200 OK", &results.to_string()),
+                Err(error) => send_error(&mut stream, "502 Bad Gateway", error),
+            }
+        }
         ("POST", "/v1/net/fetch") => {
             let url = extract_json_str(&body, "url").unwrap_or_default();
             match fetch_public_https(&url) {
-                Ok(bytes) => {
-                    let (title, text) = sanitize_html_to_text(&String::from_utf8_lossy(&bytes));
-                    let result = json!({"url": url, "tls": "1.2+", "bytes": bytes.len(), "title": title, "text": text});
+                Ok(page) => {
+                    let raw = String::from_utf8_lossy(&page.bytes);
+                    let (title, text, html) = if page.html {
+                        let (title, text) = sanitize_html_to_text(&raw);
+                        (title, text, Some(render_document(&page.url, &raw)))
+                    } else {
+                        (String::new(), raw.into_owned(), None)
+                    };
+                    let result = json!({"url": page.url, "tls": "1.2+", "bytes": page.bytes.len(), "title": title, "text": text, "html": html});
                     send_json(&mut stream, "200 OK", &result.to_string());
                 }
                 Err((blocked, error)) => send_error(
@@ -810,8 +848,8 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                 return;
             };
             let result = native_inference::prompt_and_limit(&body).and_then(|(prompt, max)| {
-                native_inference::admit_model(model.file_bytes, read_free_vram())?;
-                native_inference::generate(&ctx.engine_bin, &model, &prompt, max)
+                native_inference::admit_model(model.trunk_bytes, read_free_vram())?;
+                native_inference::generate(&ctx.engine_bin, &model, prompt, max)
             });
             match result {
                 Ok(reply) if streaming => send_sse_completion(&mut stream, model_id, &reply),
@@ -819,7 +857,7 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                     "id": "chatcmpl-inkling2",
                     "object": "chat.completion",
                     "model": model_id,
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": reply}, "finish_reason": "length"}]
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": reply.text}, "finish_reason": reply.finish}]
                 }).to_string()),
                 Err((status, message)) => send_error(&mut stream, status, message),
             }
@@ -855,6 +893,21 @@ pub fn run_http_bridge(
         .unwrap_or_else(|_| DynamicLoraAdapter::new(LoraConfig::default()));
     let bearer_token = usable_token("INKLING2_BRIDGE_TOKEN")?;
     let inference_token = usable_token("INKLING2_INFERENCE_TOKEN")?;
+    let local_console = env::var("INKLING2_LOCAL_CONSOLE").is_ok_and(|v| v == "1");
+    if local_console && bearer_token.is_some() {
+        return Err("local console mode cannot be combined with a console token".into());
+    }
+    let search_port = match env::var("INKLING2_RUSTXNG_PORT") {
+        Ok(value) => Some(
+            value
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port >= 1024 && *port != addr.port())
+                .ok_or("invalid RustXNG port")?,
+        ),
+        Err(env::VarError::NotPresent) => None,
+        Err(_) => return Err("invalid RustXNG port".into()),
+    };
     if bearer_token.is_some() && bearer_token == inference_token {
         return Err("console and inference tokens must be distinct".into());
     }
@@ -893,6 +946,8 @@ pub fn run_http_bridge(
         voice: VoicePersona::default(),
         bearer_token,
         inference_token,
+        local_console,
+        search_port,
         preview_dir,
         model_listing,
         active_connections: AtomicUsize::new(0),

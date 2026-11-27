@@ -96,7 +96,8 @@ pub fn cmd_net_status(out: &mut impl Write) {
 /// Perform a bounded HTTPS GET head/body fetch (enforces TLS 1.2+, SSRF guard, timeouts).
 pub fn cmd_net_fetch(url: &str, out: &mut impl Write) {
     match fetch_public_https(url) {
-        Ok(bytes) => {
+        Ok(page) => {
+            let bytes = page.bytes;
             let preview_len = bytes.len().min(2048);
             let _ = writeln!(out, "Fetched {} bytes over TLS:", bytes.len());
             let preview = String::from_utf8_lossy(&bytes[..preview_len]);

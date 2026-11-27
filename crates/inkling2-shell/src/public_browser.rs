@@ -1,9 +1,19 @@
-//! HTTPS-only text retrieval with a single, validated and pinned destination.
+//! HTTPS document retrieval with a freshly validated, pinned destination at each hop.
 
+use std::borrow::Cow;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::process::Command;
 
+use url::Url;
+
 const MAX_BYTES: usize = 256 * 1024;
+type FetchError = (bool, &'static str);
+
+pub struct Page {
+    pub url: String,
+    pub bytes: Vec<u8>,
+    pub html: bool,
+}
 
 fn allowed_ip(ip: Ipv4Addr) -> bool {
     !matches!(
@@ -51,9 +61,22 @@ pub fn host_for_url(url: &str) -> Result<&str, &'static str> {
         .ok_or("a public DNS name on HTTPS port 443 is required")
 }
 
-pub fn fetch_public_https(url: &str) -> Result<Vec<u8>, (bool, &'static str)> {
+pub fn fetch_public_https(url: &str) -> Result<Page, FetchError> {
+    let mut url = url.to_owned();
+    for _ in 0..4 {
+        let (page, redirect) = fetch_once(&url)?;
+        match redirect {
+            Some(next) => url = next,
+            None => return Ok(page),
+        }
+    }
+    Err((true, "HTTPS redirect limit reached"))
+}
+
+fn fetch_once(url: &str) -> Result<(Page, Option<String>), FetchError> {
     let host = host_for_url(url).map_err(|e| (true, e))?;
-    let resolved = (host, 443)
+    // Use the absolute DNS name so a resolver search suffix cannot change the target.
+    let resolved = (format!("{host}."), 443)
         .to_socket_addrs()
         .map_err(|_| (false, "DNS lookup failed"))?;
     let mut ipv4 = None;
@@ -75,7 +98,6 @@ pub fn fetch_public_https(url: &str) -> Result<Vec<u8>, (bool, &'static str)> {
             "--disable",
             "--silent",
             "--show-error",
-            "--fail",
             "--globoff",
             "--ipv4",
             "--noproxy",
@@ -90,23 +112,117 @@ pub fn fetch_public_https(url: &str) -> Result<Vec<u8>, (bool, &'static str)> {
             "--connect-timeout",
             "5",
             "--max-time",
-            "15",
+            "8",
             "--write-out",
-            "\n%{http_code}",
+            "\n%{http_code}\t%{content_type}\t%{redirect_url}",
             "--",
             url,
         ])
         .output()
         .map_err(|_| (false, "HTTPS client unavailable"))?;
-    let Some(separator) = out.stdout.iter().rposition(|&b| b == b'\n') else {
-        return Err((false, "HTTPS retrieval failed"));
-    };
+    let failed = (false, "HTTPS retrieval failed");
+    let separator = out.stdout.iter().rposition(|&b| b == b'\n').ok_or(failed)?;
     let (body, suffix) = out.stdout.split_at(separator);
-    let code = &suffix[1..];
-    if !out.status.success() || body.len() > MAX_BYTES || code.len() != 3 || code[0] != b'2' {
-        return Err((false, "HTTPS retrieval failed or the page redirected"));
+    let mut metadata = std::str::from_utf8(&suffix[1..])
+        .map_err(|_| failed)?
+        .splitn(3, '\t');
+    let code: u16 = metadata.next().ok_or(failed)?.parse().map_err(|_| failed)?;
+    let content_type = metadata.next().ok_or(failed)?;
+    let redirect = metadata.next().ok_or(failed)?;
+    if !out.status.success() || body.len() > MAX_BYTES {
+        return Err(failed);
     }
-    Ok(body.to_vec())
+    let mut page = Page {
+        url: url.to_owned(),
+        bytes: Vec::new(),
+        html: false,
+    };
+    if matches!(code, 301 | 302 | 303 | 307 | 308) && !redirect.is_empty() {
+        let mut target = Url::parse(redirect).map_err(|_| (true, "invalid HTTPS redirect"))?;
+        target.set_fragment(None);
+        host_for_url(target.as_str()).map_err(|error| (true, error))?;
+        return Ok((page, Some(target.into())));
+    }
+    if !(200..300).contains(&code) {
+        return Err(failed);
+    }
+    let mime = content_type.split(';').next().unwrap_or_default().trim();
+    page.html = mime.eq_ignore_ascii_case("text/html")
+        || mime.eq_ignore_ascii_case("application/xhtml+xml");
+    if !page.html && !mime.eq_ignore_ascii_case("text/plain") {
+        return Err((true, "this browser supports HTML and plain text documents"));
+    }
+    page.bytes = body.to_vec();
+    Ok((page, None))
+}
+
+pub fn render_document(url: &str, raw: &str) -> String {
+    let Ok(base) = Url::parse(url) else {
+        return String::new();
+    };
+    ammonia::Builder::empty()
+        .add_url_schemes(["https"])
+        .add_tags([
+            "article",
+            "section",
+            "main",
+            "header",
+            "footer",
+            "nav",
+            "aside",
+            "div",
+            "span",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "p",
+            "br",
+            "hr",
+            "a",
+            "ul",
+            "ol",
+            "li",
+            "dl",
+            "dt",
+            "dd",
+            "table",
+            "thead",
+            "tbody",
+            "tr",
+            "td",
+            "th",
+            "pre",
+            "code",
+            "blockquote",
+            "strong",
+            "em",
+            "b",
+            "i",
+            "sup",
+            "sub",
+            "details",
+            "summary",
+        ])
+        .add_clean_content_tags([
+            "head", "script", "style", "iframe", "noscript", "template", "svg", "math",
+        ])
+        .add_tag_attributes("a", ["href"])
+        .attribute_filter(move |_, attr, value| {
+            if attr != "href" {
+                return None;
+            }
+            let mut target = base.join(value).ok()?;
+            target.set_fragment(None);
+            host_for_url(target.as_str()).ok()?;
+            let encoded: String =
+                url::form_urlencoded::byte_serialize(target.as_str().as_bytes()).collect();
+            Some(Cow::Owned(format!("#inkling-page-{encoded}")))
+        })
+        .clean(raw)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -123,5 +239,22 @@ mod tests {
         assert!(allowed_ip(Ipv4Addr::new(1, 1, 1, 1)));
         assert!(!allowed_ip(Ipv4Addr::LOCALHOST));
         assert!(!allowed_ip(Ipv4Addr::new(100, 64, 0, 1)));
+    }
+
+    #[test]
+    fn rendered_links_stay_in_the_broker_and_active_content_is_removed() {
+        let page = render_document(
+            "https://example.com/docs/",
+            r#"<div onclick="bad()"><a href="../more?q=1">more</a><a href="https://example.com/next">next</a><a href="//localhost/">bad link</a><img src="//external.test/pixel"><script>bad()</script></div>"#,
+        );
+        assert!(
+            page.contains("href=\"#inkling-page-https%3A%2F%2Fexample.com%2Fmore%3Fq%3D1\""),
+            "{page}"
+        );
+        assert!(!page.contains("onclick"));
+        assert!(page.contains("href=\"#inkling-page-https%3A%2F%2Fexample.com%2Fnext\""));
+        assert!(!page.contains("localhost"));
+        assert!(!page.contains("pixel"));
+        assert!(!page.contains("bad()"));
     }
 }

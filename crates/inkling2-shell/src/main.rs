@@ -13,9 +13,11 @@ mod http_bridge;
 mod http_request;
 mod muse_ssh;
 mod native_inference;
+mod native_prompt;
 mod net_client;
 mod public_browser;
 mod strata_catalog;
+mod web_search;
 
 use std::env;
 use std::io::{self, BufRead, Write};

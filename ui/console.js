@@ -23,6 +23,7 @@
     });
 
     let consoleToken = '';
+    let localConsole = false;
     let usingUpstream = false;
     async function api(path, opts = {}) {
       const headers = new Headers(opts.headers);
@@ -91,9 +92,10 @@
         const pill = $('health-pill');
         if (h.ok && h.data.status === 'ok') {
           pill.classList.remove('offline');
-          const needsToken = h.data.console_mode !== 'preview';
-          $('health-label').textContent = consoleToken ? 'Console online' : needsToken ? 'Console locked' : 'Preview · access unconfigured';
-          $('btn-access').disabled = !needsToken;
+          const needsToken = h.data.console_mode === 'locked';
+          localConsole = h.data.console_mode === 'local';
+          $('health-label').textContent = localConsole || consoleToken ? 'Console online' : needsToken ? 'Console locked' : 'Preview · access unconfigured';
+          $('btn-access').hidden = !needsToken;
         } else {
           pill.classList.add('offline');
           $('health-label').textContent = 'Offline';
@@ -210,7 +212,11 @@
       const input = $('chat-input');
       const text = (textOverride ?? input.value).trim();
       if (!text) return;
-      if (!consoleToken) { accessDialog.showModal(); return; }
+      if (!localConsole && !consoleToken) { accessDialog.showModal(); return; }
+      if (!usingUpstream && $('opt-effort').value !== 'none') {
+        $('chat-status').textContent = 'Set Reasoning to none for the native engine.';
+        return;
+      }
       if (!usingUpstream && Number($('opt-max-tokens').value) > 128) {
         $('chat-status').textContent = 'The native engine supports up to 128 output tokens.';
         return;
@@ -410,30 +416,96 @@
 
     // Hardened Browser
     let browserRequest = 0;
+    const browserPage = $('browser-page');
+    const browserBody = $('browser-body');
+    const browserResults = $('browser-results');
+    const linkPrefix = '#inkling-page-';
+    const readerMarkup = '<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; form-action \'none\'; base-uri \'none\'"><style>body{font:16px/1.65 system-ui;color:#162234;margin:32px auto;padding:0 22px;max-width:820px;overflow-wrap:anywhere}a{color:#155fb8}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{padding:.4em;border:1px solid #d4dbe4}</style>';
+
+    browserPage.addEventListener('load', () => {
+      browserPage.contentDocument?.addEventListener('click', event => {
+        const link = event.target.closest?.('a');
+        if (!link) return;
+        event.preventDefault();
+        const href = link.getAttribute('href');
+        if (href?.startsWith(linkPrefix)) fetchHardenedUrl(decodeURIComponent(href.slice(linkPrefix.length)));
+      });
+    });
+
+    function resetBrowser(title, message) {
+      browserPage.hidden = true;
+      browserPage.removeAttribute('srcdoc');
+      browserResults.hidden = true;
+      browserResults.replaceChildren();
+      browserBody.hidden = false;
+      browserBody.textContent = message;
+      $('browser-title').textContent = title;
+      $('browser-meta').textContent = '';
+    }
+
     async function fetchHardenedUrl(urlOverride) {
       const url = (urlOverride ?? $('browser-url').value).trim();
       if (!url) return;
       const request = ++browserRequest;
       $('browser-url').value = url;
-      $('browser-title').textContent = 'Fetching via TLS 1.2+…';
-      $('browser-meta').textContent = '';
-      $('browser-body').textContent = 'Validating URL against SSRF policy…';
+      resetBrowser('Opening page…', 'Connecting through Inkling2.');
       const r = await api('/v1/net/fetch', { method: 'POST', body: JSON.stringify({ url }) });
       if (request !== browserRequest) return;
       if (!r.ok) {
-        $('browser-title').textContent = 'Blocked / Error';
+        $('browser-title').textContent = 'Page unavailable';
         $('browser-meta').textContent = `HTTP ${r.status}`;
-        $('browser-body').textContent = r.data.error || JSON.stringify(r.data);
+        browserBody.textContent = r.data.error || 'Could not open this page.';
         return;
       }
+      $('browser-url').value = r.data.url;
       $('browser-title').textContent = r.data.title || url;
-      $('browser-meta').textContent = `TLS ${r.data.tls} · ${r.data.bytes} B · Text view`;
-      $('browser-body').textContent = r.data.text || '(no text content)';
+      $('browser-meta').textContent = `TLS ${r.data.tls} · ${r.data.bytes} B`;
+      if (r.data.html) {
+        browserPage.srcdoc = readerMarkup + r.data.html;
+        browserBody.hidden = true;
+        browserPage.hidden = false;
+      } else {
+        browserBody.textContent = r.data.text || 'This page has no readable text.';
+      }
+    }
+
+    async function searchWeb() {
+      const query = $('browser-url').value.trim();
+      if (!query) return;
+      const request = ++browserRequest;
+      resetBrowser('Searching…', 'Waiting for RustXNG.');
+      const r = await api('/v1/net/search', { method: 'POST', body: JSON.stringify({ query }) });
+      if (request !== browserRequest) return;
+      if (!r.ok) {
+        resetBrowser('Search unavailable', r.data.error || 'Could not search the web.');
+        return;
+      }
+      $('browser-title').textContent = 'Web search';
+      $('browser-meta').textContent = 'RustXNG';
+      for (const result of r.data.results) {
+        const item = document.createElement('li');
+        const button = document.createElement('button');
+        const snippet = document.createElement('p');
+        button.type = 'button';
+        button.className = 'chip';
+        button.textContent = result.title;
+        button.title = result.url;
+        button.addEventListener('click', () => fetchHardenedUrl(result.url));
+        snippet.textContent = result.snippet || result.url;
+        item.append(button, snippet);
+        browserResults.append(item);
+      }
+      browserBody.hidden = r.data.results.length > 0;
+      browserBody.textContent = 'No results with a public HTTPS address.';
+      browserResults.hidden = r.data.results.length === 0;
     }
 
     $('btn-browser-go').addEventListener('click', () => fetchHardenedUrl());
+    $('btn-browser-search').addEventListener('click', searchWeb);
     $('browser-url').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') fetchHardenedUrl();
+      if (e.key !== 'Enter') return;
+      if (/^https?:\/\//i.test(e.target.value.trim())) fetchHardenedUrl();
+      else searchWeb();
     });
     document.querySelectorAll('.browser-quick').forEach((b) => {
       b.addEventListener('click', () => fetchHardenedUrl(b.dataset.url));
@@ -441,6 +513,11 @@
 
     // Boot
     $('sb-endpoint').textContent = location.host;
+    api('/v1/session').then(result => {
+      if (!result.ok) return;
+      usingUpstream = result.data.upstream;
+      $('btn-lora-step').disabled = !result.data.experimental_lora;
+    });
     refreshHealthAndState();
     refreshGpu();
     refreshModels();

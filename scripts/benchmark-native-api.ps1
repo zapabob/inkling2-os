@@ -13,14 +13,23 @@ param(
     [ValidateRange(2, 20)]
     [int]$Repeats = 3,
     [ValidateRange(1024, 65535)]
-    [int]$Port = 18081
+    [int]$Port = 18081,
+    [switch]$UseTokens
 )
 
 $ErrorActionPreference = 'Stop'
 $address = "http://127.0.0.1:$Port/v1/chat/completions"
-$tokenPath = Join-Path $env:LOCALAPPDATA 'Inkling2-OS/v0.1.1/Inference.dpapi'
-$secret = ConvertTo-SecureString (Get-Content -LiteralPath $tokenPath -Raw)
-$key = [Net.NetworkCredential]::new('', $secret).Password
+$headers = @{}
+$health = Invoke-RestMethod "http://127.0.0.1:$Port/health" -NoProxy -TimeoutSec 5
+$expectedMode = if ($UseTokens) { 'locked' } else { 'local' }
+if ($health.service -ne 'inkling2-os-bridge' -or $health.console_mode -ne $expectedMode) {
+    throw "Expected the Inkling2 console in $expectedMode mode on port $Port."
+}
+if ($UseTokens) {
+    $tokenPath = Join-Path $env:LOCALAPPDATA 'Inkling2-OS/v0.1.1/Inference.dpapi'
+    $secret = ConvertTo-SecureString (Get-Content -LiteralPath $tokenPath -Raw)
+    $headers.Authorization = 'Bearer ' + [Net.NetworkCredential]::new('', $secret).Password
+}
 $prompt = Get-Content -LiteralPath $PromptFile -Raw -Encoding utf8
 $body = @{
     model=$Model; max_tokens=$MaxTokens; stream=$false
@@ -37,8 +46,8 @@ function Get-GpuSnapshot {
 $samples = for ($i=0; $i -lt $Warmups+$Repeats; $i++) {
     $gpu = Get-GpuSnapshot
     $watch = [Diagnostics.Stopwatch]::StartNew()
-    $response = Invoke-WebRequest -Uri $address -Method Post -NoProxy -SkipHttpErrorCheck -TimeoutSec 255 `
-        -Headers @{Authorization="Bearer $key"} -ContentType 'application/json; charset=utf-8' -Body $bytes
+    $response = Invoke-WebRequest -Uri $address -Method Post -NoProxy -SkipHttpErrorCheck -TimeoutSec 615 `
+        -Headers $headers -ContentType 'application/json; charset=utf-8' -Body $bytes
     $watch.Stop()
     $parsed = $response.Content | ConvertFrom-Json
     [pscustomobject]@{

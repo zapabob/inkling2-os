@@ -644,6 +644,11 @@
     #access-dialog .row-actions { margin-top: 12px; }
     #access-token { display: block; width: 100%; margin: 8px 0; }
     #browser-url { min-width: 0; }
+    #browser-page { display: block; width: 100%; height: min(62vh, 680px); background: #fff; border: 0; border-radius: 10px; }
+    #browser-page[hidden] { display: none; }
+    #browser-results { margin: 0; padding: 0; list-style: none; }
+    #browser-results li { padding: 12px 0; border-bottom: 1px solid var(--border); }
+    #browser-results p { margin: 5px 0 0; overflow-wrap: anywhere; }
     .composer-opts, .panel-header { flex-wrap: wrap; }
 
     @media (max-width: 900px) {
@@ -707,7 +712,7 @@
           <span class="pulse-dot"></span>
           <span id="health-label">Connecting…</span>
         </span>
-        <button type="button" class="icon-btn" id="btn-access">Unlock</button>
+        <button type="button" class="icon-btn" id="btn-access" hidden>Unlock</button>
         <button type="button" class="icon-btn" id="btn-theme" title="Switch Light / Dark theme">Theme</button>
       </div>
     </header>
@@ -927,20 +932,22 @@
 
             <div class="card">
               <div class="row-actions" style="margin-bottom:10px;">
-                <input id="browser-url" class="mac-input" style="flex:1;" value="https://github.com/zapabob/inkling2-os" placeholder="https://..." />
-                <button type="button" class="btn-primary" id="btn-browser-go">Fetch Safe</button>
+                <input id="browser-url" class="mac-input" style="flex:1;" aria-label="HTTPS address or search query" placeholder="HTTPS address or search query" />
+                <button type="button" class="btn-primary" id="btn-browser-go">Open site</button>
+                <button type="button" class="chip" id="btn-browser-search">Search</button>
               </div>
               <div class="quick-prompts" style="justify-content:flex-start;">
                 <button type="button" class="chip browser-quick" data-url="https://github.com/zapabob/inkling2-os">inkling2-os</button>
                 <button type="button" class="chip browser-quick" data-url="https://github.com/zapabob/inkling2-cuda-engine">inkling2-cuda-engine</button>
                 <button type="button" class="chip browser-quick" data-url="https://huggingface.co">Hugging Face</button>
-                <button type="button" class="chip browser-quick" data-url="http://127.0.0.1:8080/health">Test SSRF Block</button>
               </div>
             </div>
 
             <div class="card">
               <div class="card-title"><span id="browser-title">Ready</span> <span id="browser-meta" class="kv-val" style="float:right;text-transform:none;"></span></div>
-              <div class="mono-log" id="browser-body" style="max-height:420px;">Enter an HTTPS URL and click "Fetch Safe". Results are displayed as plain text. Redirects are blocked.</div>
+              <div class="mono-log" id="browser-body" role="status" style="max-height:420px;">Enter a public HTTPS address or search the web.</div>
+              <iframe id="browser-page" title="Public web document" sandbox="allow-same-origin" referrerpolicy="no-referrer" hidden></iframe>
+              <ul id="browser-results" hidden></ul>
             </div>
           </div>
         </section>

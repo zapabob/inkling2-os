@@ -10,6 +10,7 @@ use std::time::Duration;
 use inkling2_resource::{VramRequest, admit_vram};
 use serde_json::Value;
 
+use crate::native_prompt::{self, NativePrompt};
 use crate::strata_catalog::StrataModelInfo;
 
 pub const MAX_OUTPUT_TOKENS: u64 = 128;
@@ -17,6 +18,8 @@ const DEFAULT_OUTPUT_TOKENS: u64 = 32;
 const MAX_PROMPT_BYTES: usize = 1536;
 const MAX_OUTPUT_BYTES: u64 = 64 * 1024;
 const MIB: u64 = 1024 * 1024;
+// Each request loads the model. The reported v0.1.0 cold load alone took about 390 seconds.
+const NATIVE_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
 pub type InferenceError = (&'static str, &'static str);
 const UNAVAILABLE: InferenceError = (
@@ -28,7 +31,7 @@ const BAD_REQUEST: InferenceError = (
     "expected text-only system, user or assistant messages",
 );
 
-pub fn prompt_and_limit(body: &Value) -> Result<(String, u64), InferenceError> {
+pub fn prompt_and_limit(body: &Value) -> Result<(&[Value], u64), InferenceError> {
     if body
         .get("tools")
         .is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()))
@@ -45,9 +48,18 @@ pub fn prompt_and_limit(body: &Value) -> Result<(String, u64), InferenceError> {
     if messages.is_empty() || messages.len() > 32 {
         return Err(BAD_REQUEST);
     }
-    let mut prompt = String::new();
+    if body
+        .get("reasoning_effort")
+        .is_some_and(|effort| !effort.is_null() && effort.as_str() != Some("none"))
+    {
+        return Err((
+            "400 Bad Request",
+            "native inference currently supports reasoning_effort none",
+        ));
+    }
+    let mut content_bytes = 0;
     for message in messages {
-        let role = message
+        message
             .get("role")
             .and_then(Value::as_str)
             .filter(|role| matches!(*role, "system" | "user" | "assistant"))
@@ -62,20 +74,9 @@ pub fn prompt_and_limit(body: &Value) -> Result<(String, u64), InferenceError> {
         {
             return Err(BAD_REQUEST);
         }
-        if !prompt.is_empty() {
-            prompt.push_str(" | ");
-        }
-        prompt.push_str(role);
-        prompt.push_str(": ");
-        // The shipped daemon receives one request per line.
-        prompt.extend(
-            content
-                .chars()
-                .map(|c| if c.is_control() { ' ' } else { c }),
-        );
+        content_bytes += content.len();
     }
-    prompt.push_str(" | assistant: ");
-    if prompt.len() > MAX_PROMPT_BYTES {
+    if content_bytes > MAX_PROMPT_BYTES {
         return Err((
             "400 Bad Request",
             "input exceeds the native adapter's 1536-byte limit",
@@ -94,18 +95,17 @@ pub fn prompt_and_limit(body: &Value) -> Result<(String, u64), InferenceError> {
                 "native output limit must be between 1 and 128 tokens",
             ))?,
     };
-    Ok((prompt, max))
+    Ok((messages, max))
 }
 
-pub fn admit_model(bytes: u64, free_mib: Option<u64>) -> Result<(), InferenceError> {
-    // The native layout exposes no exact memory dry run. Admit conservatively using
-    // the whole file and the upstream Windows reserve plus provisional working margins.
+pub fn admit_model(trunk_bytes: u64, free_mib: Option<u64>) -> Result<(), InferenceError> {
+    // Expert weights spill to host RAM and storage. Only the trunk and working memory must fit.
     admit_vram(
         free_mib.and_then(|free| free.checked_mul(MIB)),
         VramRequest {
-            weights: bytes,
-            experts: 0, // already included in the file
-            kv_cache: 256 * MIB,
+            weights: trunk_bytes,
+            experts: 128 * MIB, // Two top-8 device staging buffers of up to 8 MiB per expert.
+            kv_cache: 396 * MIB, // 48 slots, 4096 positions, eight 128-wide K8V8 heads plus scales.
             activations: 128 * MIB,
             cuda_workspace: 256 * MIB,
             runtime: 128 * MIB,
@@ -121,20 +121,61 @@ pub fn admit_model(bytes: u64, free_mib: Option<u64>) -> Result<(), InferenceErr
     })
 }
 
+pub struct NativeReply {
+    pub text: String,
+    pub finish: &'static str,
+}
+
+fn read_reply(line: &str, prompt: &NativePrompt, max: u64) -> Option<NativeReply> {
+    let (finish, ids) = line
+        .strip_suffix('\n')?
+        .trim_end_matches('\r')
+        .split_once('\t')?;
+    let finish = match finish {
+        "stop" => "stop",
+        "length" => "length",
+        _ => return None,
+    };
+    let ids = if ids.is_empty() {
+        Vec::new()
+    } else {
+        ids.split(',')
+            .map(str::parse::<u32>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?
+    };
+    if ids.len() as u64 > max || finish == "length" && ids.len() as u64 != max {
+        return None;
+    }
+    let added = prompt.tokenizer.get_added_tokens_decoder();
+    if ids.iter().any(|id| {
+        prompt.tokenizer.id_to_token(*id).is_none()
+            || added.get(id).is_some_and(|token| token.special)
+    }) {
+        return None;
+    }
+    let text = prompt.tokenizer.decode(&ids, false).ok()?;
+    Some(NativeReply { text, finish })
+}
+
 pub fn generate(
     engine: &Path,
     model: &StrataModelInfo,
-    prompt: &str,
+    messages: &[Value],
     max: u64,
-) -> Result<String, InferenceError> {
-    if !engine.is_file() || !model.path.with_file_name("tokenizer.json").is_file() {
-        return Err((
-            "503 Service Unavailable",
-            "native executable or model tokenizer is missing",
-        ));
+) -> Result<NativeReply, InferenceError> {
+    if !engine.is_file() {
+        return Err(("503 Service Unavailable", "native executable is missing"));
     }
+    let prompt = native_prompt::prepare(model, messages, max)?;
+    let csv = |ids: &[u32]| ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let request = format!(
+        "{max}\t{}\t{}\n",
+        csv(&prompt.stop_ids),
+        csv(&prompt.input_ids)
+    );
     let mut child = Command::new(engine)
-        .arg("daemon")
+        .arg("generate-token-ids")
         .arg(&model.path)
         .env_remove("INKLING2_BRIDGE_TOKEN")
         .env_remove("INKLING2_INFERENCE_TOKEN")
@@ -151,30 +192,32 @@ pub fn generate(
         return Err(UNAVAILABLE);
     };
     let (tx, rx) = mpsc::sync_channel(1);
-    let request = format!("{max}\t{prompt}\n");
     let reader = thread::spawn(move || {
         let result = (|| {
+            input.write_all(request.as_bytes()).ok()?;
+            drop(input);
             let mut output = BufReader::new(output).take(MAX_OUTPUT_BYTES);
             let mut line = String::new();
             output.read_line(&mut line).ok()?;
-            if line.trim_end() != "READY" {
-                return None;
-            }
-            input.write_all(request.as_bytes()).ok()?;
-            drop(input);
-            line.clear();
-            output.read_line(&mut line).ok()?;
-            let answer = line.trim_end_matches(['\r', '\n']);
-            (!answer.trim().is_empty() && line.ends_with('\n')).then(|| answer.to_owned())
+            Some(line)
         })();
         let _ = tx.send(result);
     });
-    let result = rx.recv_timeout(Duration::from_secs(240));
+    let result = rx.recv_timeout(NATIVE_REQUEST_TIMEOUT);
     // Always reap the owned process, including when it stops responding.
     let _ = child.kill();
     let _ = child.wait();
     let _ = reader.join();
-    result.ok().flatten().ok_or(UNAVAILABLE)
+    result
+        .map_err(|error| match error {
+            mpsc::RecvTimeoutError::Timeout => (
+                "504 Gateway Timeout",
+                "native model loading and generation exceeded the 600-second deadline",
+            ),
+            mpsc::RecvTimeoutError::Disconnected => UNAVAILABLE,
+        })?
+        .and_then(|line| read_reply(&line, &prompt, max))
+        .ok_or(UNAVAILABLE)
 }
 
 #[cfg(test)]
@@ -194,10 +237,10 @@ mod tests {
         let result = prompt_and_limit(&body);
         assert_eq!(
             result,
-            Ok((
-                "system: Be concise | user: 日本語 二行目 | assistant: ".into(),
-                12
-            ))
+            body["messages"]
+                .as_array()
+                .map(|messages| (messages.as_slice(), 12))
+                .ok_or(BAD_REQUEST)
         );
         assert!(
             prompt_and_limit(&json!({"messages": body["messages"], "max_tokens": 129})).is_err()

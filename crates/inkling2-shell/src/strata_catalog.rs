@@ -12,6 +12,7 @@ pub struct StrataModelInfo {
     pub path: PathBuf,
     /// Total file size in bytes.
     pub file_bytes: u64,
+    pub trunk_bytes: u64,
     /// Binary format version field.
     pub format_version: u16,
     /// Section table count.
@@ -29,7 +30,7 @@ pub fn inspect_strata_header(path: &Path) -> Result<StrataModelInfo, String> {
         return Err("model must be a regular local file with a complete header".into());
     }
     let mut f = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    let mut hdr = [0u8; 64];
+    let mut hdr = [0u8; 144];
     f.read_exact(&mut hdr)
         .map_err(|e| format!("read header {}: {e}", path.display()))?;
 
@@ -45,7 +46,22 @@ pub fn inspect_strata_header(path: &Path) -> Result<StrataModelInfo, String> {
     let manifest_bytes = u64::from_le_bytes([
         hdr[24], hdr[25], hdr[26], hdr[27], hdr[28], hdr[29], hdr[30], hdr[31],
     ]);
-    if !(4..=32).contains(&section_count)
+    let le64 = |start| {
+        hdr.get(start..start + 8)
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+            .map(u64::from_le_bytes)
+            .ok_or("invalid section descriptor")
+    };
+    let trunk_offset = le64(80)?;
+    let trunk_bytes = le64(88)?;
+    if hdr[128..132] != 1_u32.to_le_bytes()
+        || trunk_bytes == 0
+        || trunk_offset < 4096
+        || trunk_offset % 4096 != 0
+        || trunk_offset
+            .checked_add(trunk_bytes)
+            .is_none_or(|end| end > meta.len())
+        || !(4..=32).contains(&section_count)
         || manifest_offset < 4096
         || !(1..=64 * 1024 * 1024).contains(&manifest_bytes)
         || manifest_offset
@@ -58,6 +74,7 @@ pub fn inspect_strata_header(path: &Path) -> Result<StrataModelInfo, String> {
     Ok(StrataModelInfo {
         path: path.to_path_buf(),
         file_bytes: meta.len(),
+        trunk_bytes,
         format_version,
         section_count,
         manifest_offset,
@@ -78,6 +95,19 @@ fn is_reparse_point(meta: &fs::Metadata) -> bool {
 
 /// Discover all valid `.strata` v1.1 files inside `root` (depth <= 2).
 pub fn discover_models(root: &Path) -> Vec<StrataModelInfo> {
+    let mut found = scan_root(root);
+    if let Some(extra) = std::env::var_os("INKLING2_ADDITIONAL_MODEL_DIRS") {
+        for path in std::env::split_paths(&extra).filter(|path| path.is_absolute() && path != root)
+        {
+            found.extend(scan_root(&path));
+        }
+    }
+    found.sort_by(|a, b| a.path.cmp(&b.path));
+    found.dedup_by(|a, b| a.path == b.path);
+    found
+}
+
+fn scan_root(root: &Path) -> Vec<StrataModelInfo> {
     let mut found = Vec::new();
     let Ok(entries) = fs::read_dir(root) else {
         return found;
