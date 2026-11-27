@@ -1,0 +1,7 @@
+target/
+.venv/
+dist/
+state/
+_docs/
+*.tmp
+*.bak*

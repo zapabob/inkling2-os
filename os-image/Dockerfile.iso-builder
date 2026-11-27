@@ -1,0 +1,53 @@
+# Lightweight, Reproducible Inkling2-OS Bootable UEFI/BIOS ISO Builder
+# Uses ubuntu:24.04 (~30MB base) to avoid 12GB CUDA devel image extraction OOM on 32GB hosts,
+# installs Rust 2024 + liburing + uv/hakua-memory + GRUB2 UEFI/BIOS + Linux kernel + squashfs.
+
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake ninja-build curl ca-certificates git pkg-config \
+    liburing-dev libzstd-dev libssl-dev \
+    iproute2 dhcpcd-base wpasupplicant iw nftables chrony openssh-client \
+    ffmpeg alsa-utils v4l-utils python3 python3-venv \
+    grub-common grub-pc-bin grub-efi-amd64-bin xorriso mtools squashfs-tools \
+    linux-image-generic initramfs-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv + hakua-memory==0.3.5 into Inkling2-OS Python runtime
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && /root/.local/bin/uv venv /opt/inkling2-venv \
+    && /root/.local/bin/uv pip install --python /opt/inkling2-venv/bin/python hakua-memory
+
+# Install Rust 2024 toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /src/inkling2-os
+COPY . /src/inkling2-os
+
+# 1. Run Linux Rust 2024 test suite + build release stripped binaries (PID 1 & AI-Native Shell)
+RUN cargo test --workspace \
+    && cargo build --release --workspace \
+    && strip target/release/inkling2-init target/release/inkling2-shell
+
+# 2. Verify hakua-memory inside Linux venv
+RUN /opt/inkling2-venv/bin/python python/hakua_bridge.py --probe
+
+# 3. Assemble minimal bootable rootfs (PID 1, AI Shell, hakua-memory, nftables, TLS certs) + UEFI/BIOS ISO
+RUN mkdir -p /out /iso/boot/grub /rootfs/sbin /rootfs/usr/bin /rootfs/usr/lib/inkling2 /rootfs/opt \
+    /rootfs/etc/inkling2 /rootfs/etc/ssl/certs /rootfs/models /rootfs/proc /rootfs/sys /rootfs/dev /rootfs/run \
+    && cp target/release/inkling2-init /rootfs/sbin/inkling2-init \
+    && cp target/release/inkling2-shell /rootfs/usr/bin/inkling2-shell \
+    && cp python/hakua_bridge.py /rootfs/usr/lib/inkling2/hakua_bridge.py \
+    && cp -a /opt/inkling2-venv /rootfs/opt/inkling2-venv \
+    && cp os-image/net/nftables.conf /rootfs/etc/inkling2/nftables.conf \
+    && cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt \
+    && cp os-image/grub/grub.cfg /iso/boot/grub/grub.cfg \
+    && cp /boot/vmlinuz-* /iso/boot/vmlinuz \
+    && cp /boot/initrd.img-* /iso/boot/initramfs.img \
+    && mksquashfs /rootfs /iso/boot/inkling2-rootfs.squashfs -comp zstd -Xcompression-level 12 \
+    && grub-mkrescue -o /out/inkling2-os-x86_64-sm120.iso /iso
+
+FROM scratch AS artifact
+COPY --from=builder /out/inkling2-os-x86_64-sm120.iso /inkling2-os-x86_64-sm120.iso

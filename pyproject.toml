@@ -1,0 +1,8 @@
+[project]
+name = "inkling2-os-memory-bridge"
+version = "0.1.0"
+description = "Hakua-memory bridge for Inkling2-OS 45MB compressed episodic memory & dynamic LoRA"
+requires-python = ">=3.11"
+dependencies = [
+    "hakua-memory",
+]

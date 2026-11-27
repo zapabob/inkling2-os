@@ -1,0 +1,39 @@
+# Rust & C++ build artefacts
+/target/
+/dist/
+/bin/
+*.exe
+*.pdb
+*.iso
+
+# Python virtual environments & caches
+/.venv/
+__pycache__/
+*.pyc
+
+# Runtime state, keys, memory & LoRA snapshots (NEVER commit)
+/state/
+*.ikm
+*.iklora
+*.wav
+*.jpg
+*.png
+*.key
+*.pem
+id_ed25519*
+
+# Model weights & internal session logs
+*.strata
+*.gguf
+/_docs/
+
+# Root staging duplicates
+/hakua_bridge.py
+/install_on_muse_vm.sh
+/muse_vm_sync.sh
+
+# IDE & OS
+.vs/
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,1 @@
+init=/sbin/inkling2-init isolcpus=2-11 nohz_full=2-11 rcu_nocbs=2-11 default_hugepagesz=2M hugepagesz=2M hugepages=8192 transparent_hugepage=never nvidia-drm.modeset=0 nvme_core.io_timeout=30 amd_pstate=active console=tty1 quiet

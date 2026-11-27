@@ -1,0 +1,1252 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Inkling2-OS — Strata CUDA 13.5 Console</title>
+  <meta name="color-scheme" content="light dark" />
+  <script>
+    try {
+      const saved = localStorage.getItem('inkling2.theme') || 'system';
+      const dark = saved === 'dark' || (saved === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    } catch {
+      document.documentElement.dataset.theme = 'dark';
+    }
+  </script>
+  <style>
+    :root {
+      --canvas: #f5f5f7;
+      --sidebar: rgba(246, 246, 248, 0.82);
+      --titlebar: rgba(250, 250, 252, 0.85);
+      --surface: #ffffff;
+      --surface-subtle: #f1f2f5;
+      --border: rgba(0, 0, 0, 0.09);
+      --border-strong: rgba(0, 0, 0, 0.16);
+      --text-primary: #1d1d1f;
+      --text-secondary: #515154;
+      --text-tertiary: #6e6e73;
+      --accent: #0071e3;
+      --accent-hover: #0077ed;
+      --accent-soft: rgba(0, 113, 227, 0.12);
+      --emerald: #15803d;
+      --emerald-soft: rgba(21, 128, 61, 0.12);
+      --cyan: #0e7490;
+      --amber: #b45309;
+      --danger: #dc2626;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.07);
+      --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+      --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "Hiragino Sans", sans-serif;
+      --font-mono: "SF Mono", ui-monospace, "Cascadia Code", "Consolas", monospace;
+    }
+
+    html[data-theme="dark"] {
+      --canvas: #0e1113;
+      --sidebar: rgba(20, 23, 27, 0.82);
+      --titlebar: rgba(18, 21, 25, 0.86);
+      --surface: #16191d;
+      --surface-subtle: #1e2228;
+      --border: rgba(255, 255, 255, 0.10);
+      --border-strong: rgba(255, 255, 255, 0.18);
+      --text-primary: #f5f5f7;
+      --text-secondary: #b8bcc4;
+      --text-tertiary: #8b929e;
+      --accent: #2997ff;
+      --accent-hover: #4aa8ff;
+      --accent-soft: rgba(41, 151, 255, 0.16);
+      --emerald: #22c55e;
+      --emerald-soft: rgba(34, 197, 94, 0.16);
+      --cyan: #22d3ee;
+      --amber: #f59e0b;
+      --danger: #f87171;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+      --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.45);
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--canvas);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, input, select, textarea {
+      font-family: inherit;
+      font-size: inherit;
+      color: inherit;
+    }
+
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.35);
+    }
+
+    /* macOS Window Frame */
+    .app-shell {
+      display: grid;
+      grid-template-rows: 52px 1fr;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 16px;
+      background: var(--titlebar);
+      backdrop-filter: blur(22px) saturate(160%);
+      -webkit-backdrop-filter: blur(22px) saturate(160%);
+      border-bottom: 1px solid var(--border);
+      z-index: 20;
+      user-select: none;
+    }
+
+    .titlebar-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .traffic-lights {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    .dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 0.5px solid rgba(0, 0, 0, 0.14);
+    }
+    .dot.red { background: #ff5f57; }
+    .dot.yellow { background: #febc2e; }
+    .dot.green { background: #28c840; }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .brand-title {
+      font-family: var(--font-display);
+      font-weight: 600;
+      font-size: 14px;
+      letter-spacing: -0.01em;
+    }
+    .brand-sub {
+      font-size: 12px;
+      color: var(--text-tertiary);
+    }
+
+    /* macOS Segmented Control */
+    .segmented {
+      display: inline-flex;
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .seg-btn {
+      border: 0;
+      background: transparent;
+      color: var(--text-secondary);
+      padding: 5px 12px;
+      border-radius: 7px;
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .seg-btn:hover { color: var(--text-primary); }
+    .seg-btn.active {
+      background: var(--surface);
+      color: var(--text-primary);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .titlebar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      background: var(--emerald-soft);
+      color: var(--emerald);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+    .status-pill.offline {
+      background: rgba(220, 38, 38, 0.14);
+      color: var(--danger);
+    }
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .icon-btn {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-secondary);
+      border-radius: 8px;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .icon-btn:hover {
+      border-color: var(--border-strong);
+      color: var(--text-primary);
+    }
+    .mobile-menu-btn { display: none; }
+
+    /* Workspace Split */
+    .workspace {
+      display: grid;
+      grid-template-columns: 276px 1fr;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    /* Frosted macOS Sidebar */
+    .sidebar {
+      background: var(--sidebar);
+      backdrop-filter: blur(20px) saturate(160%);
+      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      border-right: 1px solid var(--border);
+      padding: 16px 14px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .side-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-tertiary);
+      margin: 0 0 8px 4px;
+    }
+
+    .side-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .kv-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 12.5px;
+      padding: 3px 0;
+    }
+    .kv-label { color: var(--text-secondary); }
+    .kv-val {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+      font-weight: 500;
+      color: var(--text-primary);
+      text-align: right;
+    }
+
+    .meter-track {
+      height: 6px;
+      border-radius: 9999px;
+      background: var(--surface-subtle);
+      overflow: hidden;
+      margin: 6px 0 4px;
+    }
+    .meter-fill {
+      height: 100%;
+      border-radius: 9999px;
+      background: var(--accent);
+      transition: width 0.35s ease;
+    }
+    .meter-fill.emerald { background: var(--emerald); }
+    .meter-fill.cyan { background: var(--cyan); }
+
+    .mac-select, .mac-input, .mac-textarea {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 10px;
+      color: var(--text-primary);
+      font-size: 13px;
+    }
+    .mac-select:hover, .mac-input:hover, .mac-textarea:hover {
+      border-color: var(--border-strong);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #ffffff;
+      border: 0;
+      border-radius: 8px;
+      padding: 7px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .btn-secondary:hover { border-color: var(--border-strong); }
+
+    /* Main Views */
+    .main-pane {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--canvas);
+    }
+
+    .view {
+      display: none;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }
+    .view.active {
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Chat View */
+    .chat-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      max-width: 920px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .chat-empty {
+      margin: auto;
+      text-align: center;
+      max-width: 460px;
+      padding: 24px;
+    }
+    .chat-empty h2 {
+      font-family: var(--font-display);
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin: 0 0 8px;
+    }
+    .chat-empty p {
+      color: var(--text-secondary);
+      margin: 0 0 18px;
+      font-size: 13.5px;
+    }
+    .quick-prompts {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+    }
+    .chip {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-secondary);
+      padding: 6px 12px;
+      border-radius: 9999px;
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+    .chip:hover {
+      border-color: var(--accent);
+      color: var(--text-primary);
+    }
+
+    .msg {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: 82%;
+    }
+    .msg.user { align-self: flex-end; align-items: flex-end; }
+    .msg.assistant { align-self: flex-start; align-items: flex-start; }
+
+    .msg-bubble {
+      padding: 10px 14px;
+      border-radius: 16px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 14px;
+      line-height: 1.55;
+      box-shadow: var(--shadow-sm);
+    }
+    .msg.user .msg-bubble {
+      background: var(--accent);
+      color: #ffffff;
+      border-bottom-right-radius: 5px;
+    }
+    .msg.assistant .msg-bubble {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      border-bottom-left-radius: 5px;
+    }
+
+    .msg-meta {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      font-family: var(--font-mono);
+      padding: 0 4px;
+    }
+
+    details.thinking {
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      max-width: 100%;
+    }
+    details.thinking summary {
+      cursor: pointer;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      user-select: none;
+    }
+    details.thinking pre {
+      margin: 6px 0 0;
+      white-space: pre-wrap;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      line-height: 1.45;
+    }
+
+    .composer-wrap {
+      border-top: 1px solid var(--border);
+      background: var(--titlebar);
+      backdrop-filter: blur(18px);
+      padding: 12px 24px 16px;
+    }
+    .composer-inner {
+      max-width: 920px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .composer-bar {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+    .composer-input {
+      flex: 1;
+      resize: none;
+      min-height: 44px;
+      max-height: 140px;
+      border-radius: 12px;
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }
+    .composer-opts {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--text-tertiary);
+    }
+    .inline-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .inline-controls select {
+      width: auto;
+      padding: 3px 8px;
+      font-size: 12px;
+    }
+
+    /* Dashboard / Panel Views */
+    .panel-container {
+      max-width: 1040px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .panel-header h2 {
+      font-family: var(--font-display);
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin: 0;
+    }
+    .panel-header p {
+      margin: 2px 0 0;
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 18px;
+      box-shadow: var(--shadow-sm);
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--text-tertiary);
+      margin: 0 0 8px;
+    }
+    .metric-big {
+      font-family: var(--font-display);
+      font-size: 28px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+    .metric-unit {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-left: 4px;
+    }
+
+    .tc-bar-row {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+    .tc-bar-head {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+    }
+    .tc-bar-track {
+      height: 10px;
+      border-radius: 9999px;
+      background: var(--surface-subtle);
+      overflow: hidden;
+    }
+    .tc-bar-fill {
+      height: 100%;
+      border-radius: 9999px;
+      transition: width 0.5s ease;
+    }
+
+    .mono-log {
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text-secondary);
+      max-height: 220px;
+      overflow-y: auto;
+    }
+
+    .list-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: var(--surface-subtle);
+      border: 1px solid var(--border);
+      margin-bottom: 8px;
+    }
+    .list-item:last-child { margin-bottom: 0; }
+
+    .row-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 900px) {
+      .workspace { grid-template-columns: 1fr; }
+      .sidebar {
+        position: fixed;
+        top: 52px;
+        left: 0;
+        bottom: 0;
+        width: 280px;
+        z-index: 30;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+        box-shadow: var(--shadow-md);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .mobile-menu-btn { display: inline-flex; }
+      .grid-3, .grid-2 { grid-template-columns: 1fr; }
+      .brand-sub { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <button type="button" class="icon-btn mobile-menu-btn" id="btn-sidebar" aria-label="Toggle sidebar">Menu</button>
+        <div class="traffic-lights" aria-hidden="true">
+          <span class="dot red"></span>
+          <span class="dot yellow"></span>
+          <span class="dot green"></span>
+        </div>
+        <div class="brand">
+          <span class="brand-title">Inkling2-OS</span>
+          <span class="brand-sub">Strata · CUDA 13.5 sm_120a</span>
+        </div>
+      </div>
+
+      <nav class="segmented" role="tablist" aria-label="Workspace views">
+        <button type="button" class="seg-btn active" role="tab" data-view="chat">Chat</button>
+        <button type="button" class="seg-btn" role="tab" data-view="tensor">Tensor Core</button>
+        <button type="button" class="seg-btn" role="tab" data-view="memory">Memory &amp; LoRA</button>
+        <button type="button" class="seg-btn" role="tab" data-view="models">Models &amp; CLI</button>
+      </nav>
+
+      <div class="titlebar-right">
+        <span class="status-pill" id="health-pill" aria-live="polite">
+          <span class="pulse-dot"></span>
+          <span id="health-label">Connecting…</span>
+        </span>
+        <button type="button" class="icon-btn" id="btn-theme" title="Switch Light / Dark theme">Theme</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar" id="sidebar">
+        <div>
+          <h3 class="side-section-title">Active Model</h3>
+          <div class="side-card">
+            <select id="model-select" class="mac-select" aria-label="Select local .strata model">
+              <option value="Inkling-2-Mini-SQ-10-abliterated">Loading models…</option>
+            </select>
+            <div class="kv-row" style="margin-top:8px;">
+              <span class="kv-label">Runtime</span>
+              <span class="kv-val">CUDA 13.5 sm_120a</span>
+            </div>
+            <div class="kv-row">
+              <span class="kv-label">Endpoint</span>
+              <span class="kv-val">127.0.0.1:8080</span>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="side-section-title">GPU Telemetry</h3>
+          <div class="side-card">
+            <div class="kv-row">
+              <span class="kv-label">Device</span>
+              <span class="kv-val" id="sb-gpu-name">Detecting…</span>
+            </div>
+            <div class="kv-row">
+              <span class="kv-label">VRAM</span>
+              <span class="kv-val" id="sb-gpu-vram">—</span>
+            </div>
+            <div class="meter-track"><div class="meter-fill emerald" id="sb-vram-bar" style="width:0%"></div></div>
+            <div class="kv-row">
+              <span class="kv-label">Util / Temp</span>
+              <span class="kv-val" id="sb-gpu-util">—</span>
+            </div>
+            <div class="kv-row">
+              <span class="kv-label">Power / SM Clk</span>
+              <span class="kv-val" id="sb-gpu-pwr">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <h3 class="side-section-title">Companion State</h3>
+          <div class="side-card">
+            <div class="kv-row">
+              <span class="kv-label">Memory45</span>
+              <span class="kv-val" id="sb-mem-entries">0 entries</span>
+            </div>
+            <div class="meter-track"><div class="meter-fill cyan" id="sb-mem-bar" style="width:0%"></div></div>
+            <div class="kv-row">
+              <span class="kv-label">Budget</span>
+              <span class="kv-val" id="sb-mem-bytes">0 / 45 MiB</span>
+            </div>
+            <div class="kv-row">
+              <span class="kv-label">Dynamic LoRA</span>
+              <span class="kv-val" id="sb-lora-steps">step 0</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-pane">
+        <!-- VIEW 1: CHAT -->
+        <section class="view active" id="view-chat">
+          <div class="chat-scroll" id="chat-scroll">
+            <div class="chat-empty" id="chat-empty">
+              <h2>Inkling2-OS Local Console</h2>
+              <p>SC117 Inkling-2-Mini を CUDA 13.5 Blackwell Tensor Core と 45 MiB Memory45 でローカル実行します。</p>
+              <div class="quick-prompts">
+                <button type="button" class="chip" data-prompt="Inkling2-OS の現在の状態を3行で要約してください。">OS状態を要約</button>
+                <button type="button" class="chip" data-prompt="CUDA 13.5 sm_120a の NVFP4 Tensor Core の利点を簡潔に教えてください。">NVFP4 Tensor Core解説</button>
+                <button type="button" class="chip" data-prompt="春の海をテーマに俳句を一句詠んでください。">俳句を一句</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="composer-wrap">
+            <div class="composer-inner">
+              <div class="composer-bar">
+                <textarea id="chat-input" class="composer-input" rows="1" placeholder="メッセージを入力… (Enterで送信 / Shift+Enterで改行)"></textarea>
+                <button type="button" class="btn-primary" id="btn-send">Send</button>
+              </div>
+              <div class="composer-opts">
+                <div class="inline-controls">
+                  <label>Max Tokens:
+                    <select id="opt-max-tokens" class="mac-select">
+                      <option value="256">256</option>
+                      <option value="512" selected>512</option>
+                      <option value="1024">1024</option>
+                      <option value="2048">2048</option>
+                    </select>
+                  </label>
+                  <label>Reasoning:
+                    <select id="opt-effort" class="mac-select">
+                      <option value="none" selected>none (fast)</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                    </select>
+                  </label>
+                </div>
+                <span id="chat-status">Ready · Loopback 127.0.0.1</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 2: TENSOR CORE -->
+        <section class="view" id="view-tensor">
+          <div class="panel-container">
+            <div class="panel-header">
+              <div>
+                <h2>CUDA 13.5 Tensor Core Telemetry</h2>
+                <p>Blackwell sm_120a ネイティブ MMA (BF16 / INT8 / NVFP4) 実測ベンチマークと GPU 稼働状態</p>
+              </div>
+              <div class="row-actions">
+                <button type="button" class="btn-secondary" id="btn-refresh-gpu">Refresh GPU</button>
+                <button type="button" class="btn-primary" id="btn-run-tc">Run Tensor Core Bench</button>
+              </div>
+            </div>
+
+            <div class="grid-3">
+              <div class="card">
+                <div class="card-title">VRAM Allocation</div>
+                <div class="metric-big" id="tc-vram-val">—</div>
+                <div class="kv-label" id="tc-vram-sub">Waiting for telemetry…</div>
+              </div>
+              <div class="card">
+                <div class="card-title">GPU Util &amp; Thermal</div>
+                <div class="metric-big" id="tc-temp-val">—</div>
+                <div class="kv-label" id="tc-util-sub">—</div>
+              </div>
+              <div class="card">
+                <div class="card-title">Power &amp; SM Clock</div>
+                <div class="metric-big" id="tc-pwr-val">—</div>
+                <div class="kv-label" id="tc-clk-sub">—</div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">Native sm_120a PTX MMA Throughput (inkling2-engine bench-tc)</div>
+              <div class="tc-bar-row">
+                <div class="tc-bar-head">
+                  <span>BF16 (mma.sync m16n8k16)</span>
+                  <strong class="kv-val" id="val-bf16">— TFLOPS</strong>
+                </div>
+                <div class="tc-bar-track"><div class="tc-bar-fill" id="bar-bf16" style="width:0%;background:var(--accent)"></div></div>
+              </div>
+              <div class="tc-bar-row">
+                <div class="tc-bar-head">
+                  <span>INT8 (mma.sync m16n8k32)</span>
+                  <strong class="kv-val" id="val-int8">— TOPS</strong>
+                </div>
+                <div class="tc-bar-track"><div class="tc-bar-fill" id="bar-int8" style="width:0%;background:var(--cyan)"></div></div>
+              </div>
+              <div class="tc-bar-row" style="margin-bottom:0;">
+                <div class="tc-bar-head">
+                  <span>NVFP4 E2M1+UE4M3 (mma.sync m16n8k64.block_scale.4X)</span>
+                  <strong class="kv-val" id="val-nvfp4">— TFLOPS</strong>
+                </div>
+                <div class="tc-bar-track"><div class="tc-bar-fill" id="bar-nvfp4" style="width:0%;background:var(--emerald)"></div></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">Engine Output Log</div>
+              <div class="mono-log" id="tc-log">Click "Run Tensor Core Bench" to execute live CUDA 13.5 sm_120a kernels on RTX 5060 Ti.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 3: MEMORY & LORA -->
+        <section class="view" id="view-memory">
+          <div class="panel-container">
+            <div class="panel-header">
+              <div>
+                <h2>Memory45 (45 MiB) &amp; Dynamic LoRA</h2>
+                <p>ハード上限 45 MiB 圧縮記憶ストアとオンライン Rank-16 Dynamic LoRA 制御</p>
+              </div>
+              <button type="button" class="btn-secondary" id="btn-refresh-mem">Refresh State</button>
+            </div>
+
+            <div class="grid-2">
+              <div class="card">
+                <div class="card-title">Add to Memory45</div>
+                <div style="display:flex;flex-direction:column;gap:8px;">
+                  <input id="mem-add-text" class="mac-input" placeholder="記憶する内容を入力…" />
+                  <div class="row-actions">
+                    <label style="font-size:12px;color:var(--text-secondary);">Importance:
+                      <input id="mem-add-imp" class="mac-input" type="number" step="0.05" min="0.1" max="1.0" value="0.85" style="width:84px;display:inline-block;" />
+                    </label>
+                    <button type="button" class="btn-primary" id="btn-mem-add">Store</button>
+                  </div>
+                </div>
+                <hr style="border:0;border-top:1px solid var(--border);margin:14px 0;" />
+                <div class="card-title">Recall Memory45</div>
+                <div class="row-actions">
+                  <input id="mem-recall-q" class="mac-input" style="flex:1;" placeholder="キーワードで記憶を検索…" />
+                  <button type="button" class="btn-secondary" id="btn-mem-recall">Recall</button>
+                </div>
+                <div id="mem-hits" style="margin-top:12px;"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-title">Dynamic LoRA (Rank=16, D=2304, 73,728 Params)</div>
+                <div class="kv-row"><span class="kv-label">Evolution Steps</span><span class="kv-val" id="lora-steps">0</span></div>
+                <div class="kv-row"><span class="kv-label">Cumulative Reward</span><span class="kv-val" id="lora-reward">0.0000</span></div>
+                <div class="kv-row"><span class="kv-label">||A|| / ||B||</span><span class="kv-val" id="lora-norms">0.0000 / 0.0000</span></div>
+                <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px;">
+                  <input id="lora-text" class="mac-input" placeholder="強化学習フィードバックテキスト…" />
+                  <div class="row-actions">
+                    <input id="lora-r" class="mac-input" type="number" step="0.1" min="-1" max="1" value="0.7" style="width:84px;" />
+                    <button type="button" class="btn-primary" id="btn-lora-step">Reinforce</button>
+                    <button type="button" class="btn-secondary" id="btn-lora-rollback">Rollback</button>
+                  </div>
+                </div>
+                <hr style="border:0;border-top:1px solid var(--border);margin:14px 0;" />
+                <div class="card-title">Voice TTS Quick Test</div>
+                <div class="row-actions">
+                  <input id="voice-text" class="mac-input" style="flex:1;" placeholder="読み上げテスト文…" value="Inkling2-OS、起動完了しました。" />
+                  <button type="button" class="btn-secondary" id="btn-voice-say">Speak</button>
+                </div>
+                <div class="kv-label" id="voice-status" style="margin-top:6px;font-size:12px;"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 4: MODELS & CLI -->
+        <section class="view" id="view-models">
+          <div class="panel-container">
+            <div class="panel-header">
+              <div>
+                <h2>SC117 .strata v1.1 Models &amp; Strata-Style CLI</h2>
+                <p>検出されたローカルモデルと、zapabob/Strata 準拠のコマンドライン操作</p>
+              </div>
+              <button type="button" class="btn-secondary" id="btn-refresh-models">Rescan Models</button>
+            </div>
+
+            <div class="card">
+              <div class="card-title">Discovered .strata Models</div>
+              <div id="models-list">Loading…</div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">Strata-Aligned CLI Reference</div>
+              <div class="mono-log">inkling2-shell launch --port 8080 --open     # Start loopback bridge + open macOS Web GUI
+inkling2-shell status --port 8080            # Check /health + RTX 5060 Ti CUDA 13.5 telemetry
+inkling2-shell ui --port 8080                # Open the running macOS Web GUI in browser
+inkling2-shell bench-tc                      # Run native Blackwell sm_120a BF16/INT8/NVFP4 bench
+inkling2-shell models                        # List SC117 .strata v1.1 models
+inkling2-shell inspect &lt;path.strata&gt;         # Inspect 64B STRATA v1.1 header &amp; manifest</div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    // Theme switch
+    $('btn-theme').addEventListener('click', () => {
+      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('inkling2.theme', next); } catch {}
+    });
+
+    // Mobile sidebar toggle
+    $('btn-sidebar').addEventListener('click', () => {
+      $('sidebar').classList.toggle('open');
+    });
+
+    // Segmented view switcher
+    document.querySelectorAll('.seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const target = btn.dataset.view;
+        document.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
+        document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + target));
+        $('sidebar').classList.remove('open');
+      });
+    });
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+        ...opts,
+      });
+      const text = await res.text();
+      try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
+      catch { return { ok: res.ok, status: res.status, data: { raw: text } }; }
+    }
+
+    async function refreshHealthAndState() {
+      try {
+        const [h, mem, lora] = await Promise.all([
+          api('/health'),
+          api('/v1/memory/stats'),
+          api('/v1/lora/stats'),
+        ]);
+        const pill = $('health-pill');
+        if (h.ok && h.data.status === 'ok') {
+          pill.classList.remove('offline');
+          $('health-label').textContent = 'Online · ' + (h.data.cuda || '13.5');
+        } else {
+          pill.classList.add('offline');
+          $('health-label').textContent = 'Offline';
+        }
+        if (mem.ok) {
+          const usedMib = (mem.data.serialized_bytes / (1024 * 1024)).toFixed(2);
+          const capMib = (mem.data.budget_bytes / (1024 * 1024)).toFixed(0);
+          const pct = Math.min(100, (mem.data.serialized_bytes / Math.max(1, mem.data.budget_bytes)) * 100);
+          $('sb-mem-entries').textContent = mem.data.entries + ' entries';
+          $('sb-mem-bytes').textContent = `${usedMib} / ${capMib} MiB`;
+          $('sb-mem-bar').style.width = Math.max(2, pct) + '%';
+        }
+        if (lora.ok) {
+          $('sb-lora-steps').textContent = 'step ' + lora.data.steps;
+          $('lora-steps').textContent = lora.data.steps;
+          $('lora-reward').textContent = Number(lora.data.cumulative_reward || 0).toFixed(4);
+          $('lora-norms').textContent = `${Number(lora.data.norm_a || 0).toFixed(4)} / ${Number(lora.data.norm_b || 0).toFixed(4)}`;
+        }
+      } catch {
+        $('health-pill').classList.add('offline');
+        $('health-label').textContent = 'Offline';
+      }
+    }
+
+    async function refreshGpu() {
+      const r = await api('/v1/gpu/info');
+      if (!r.ok || !r.data.available) {
+        $('sb-gpu-name').textContent = 'Unavailable';
+        return;
+      }
+      const g = r.data;
+      const shortName = (g.name || 'GPU').replace('NVIDIA GeForce ', '');
+      const vramPct = Math.min(100, Math.round((g.memory_used_mib / Math.max(1, g.memory_total_mib)) * 100));
+      $('sb-gpu-name').textContent = shortName;
+      $('sb-gpu-vram').textContent = `${g.memory_used_mib} / ${g.memory_total_mib} MiB`;
+      $('sb-vram-bar').style.width = vramPct + '%';
+      $('sb-gpu-util').textContent = `${g.utilization_gpu}% · ${g.temperature_c}°C`;
+      $('sb-gpu-pwr').textContent = `${g.power_draw_w.toFixed(1)}W · ${g.clock_sm_mhz} MHz`;
+
+      $('tc-vram-val').innerHTML = `${(g.memory_used_mib / 1024).toFixed(2)}<span class="metric-unit">/ ${(g.memory_total_mib / 1024).toFixed(1)} GiB</span>`;
+      $('tc-vram-sub').textContent = `${shortName} · Driver ${g.driver_version}`;
+      $('tc-temp-val').innerHTML = `${g.temperature_c}<span class="metric-unit">°C</span>`;
+      $('tc-util-sub').textContent = `SM Utilization: ${g.utilization_gpu}%`;
+      $('tc-pwr-val').innerHTML = `${g.power_draw_w.toFixed(1)}<span class="metric-unit">W</span>`;
+      $('tc-clk-sub').textContent = `Limit ${g.power_limit_w.toFixed(0)}W · SM ${g.clock_sm_mhz} MHz`;
+    }
+
+    async function refreshModels() {
+      const r = await api('/v1/models');
+      const sel = $('model-select');
+      const list = $('models-list');
+      if (!r.ok || !Array.isArray(r.data.data) || r.data.data.length === 0) {
+        sel.innerHTML = '<option value="Inkling-2-Mini">No local .strata found</option>';
+        list.textContent = 'No .strata models discovered under INKLING2_MODELS_DIR.';
+        return;
+      }
+      sel.innerHTML = '';
+      list.innerHTML = '';
+      r.data.data.forEach((m) => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.id;
+        sel.appendChild(opt);
+
+        const gib = (m.bytes / (1024 ** 3)).toFixed(2);
+        const div = document.createElement('div');
+        div.className = 'list-item';
+        div.innerHTML = `<div><strong>${escapeHtml(m.id)}</strong><div style="font-size:12px;color:var(--text-tertiary);">${escapeHtml(m.owned_by || 'SC117')}</div></div><span class="kv-val">${gib} GiB</span>`;
+        list.appendChild(div);
+      });
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    // Chat
+    function appendMessage(role, content, reasoning, meta) {
+      const empty = $('chat-empty');
+      if (empty) empty.remove();
+      const wrap = document.createElement('div');
+      wrap.className = 'msg ' + role;
+
+      if (reasoning) {
+        const det = document.createElement('details');
+        det.className = 'thinking';
+        const sum = document.createElement('summary');
+        sum.textContent = 'Reasoning Trace';
+        const pre = document.createElement('pre');
+        pre.textContent = reasoning;
+        det.appendChild(sum);
+        det.appendChild(pre);
+        wrap.appendChild(det);
+      }
+
+      const bubble = document.createElement('div');
+      bubble.className = 'msg-bubble';
+      bubble.textContent = content || '(empty response)';
+      wrap.appendChild(bubble);
+
+      if (meta) {
+        const m = document.createElement('div');
+        m.className = 'msg-meta';
+        m.textContent = meta;
+        wrap.appendChild(m);
+      }
+
+      const sc = $('chat-scroll');
+      sc.appendChild(wrap);
+      sc.scrollTop = sc.scrollHeight;
+    }
+
+    async function sendChat(textOverride) {
+      const input = $('chat-input');
+      const text = (textOverride ?? input.value).trim();
+      if (!text) return;
+      if (!textOverride) input.value = '';
+      appendMessage('user', text, null, null);
+
+      const btn = $('btn-send');
+      btn.disabled = true;
+      const t0 = performance.now();
+      $('chat-status').textContent = 'Generating on CUDA 13.5 sm_120a…';
+
+      try {
+        const res = await api('/v1/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({
+            model: $('model-select').value,
+            messages: [{ role: 'user', content: text }],
+            max_tokens: Number($('opt-max-tokens').value),
+            reasoning_effort: $('opt-effort').value,
+          }),
+        });
+        const dt = ((performance.now() - t0) / 1000).toFixed(2);
+        if (res.ok && res.data.choices && res.data.choices[0]) {
+          const msg = res.data.choices[0].message || {};
+          const usage = res.data.usage;
+          const meta = usage
+            ? `${dt}s · prompt ${usage.prompt_tokens || 0} / comp ${usage.completion_tokens || 0} tok`
+            : `${dt}s · ${res.data.model || 'Inkling-2-Mini'}`;
+          appendMessage('assistant', msg.content || '(reasoning only — increase max_tokens)', msg.reasoning_content || null, meta);
+          $('chat-status').textContent = `Done in ${dt}s`;
+        } else {
+          appendMessage('assistant', 'Error: ' + JSON.stringify(res.data), null, `HTTP ${res.status}`);
+          $('chat-status').textContent = 'Request failed';
+        }
+      } catch (e) {
+        appendMessage('assistant', 'Network error: ' + e.message, null, null);
+        $('chat-status').textContent = 'Disconnected';
+      } finally {
+        btn.disabled = false;
+        refreshHealthAndState();
+      }
+    }
+
+    $('btn-send').addEventListener('click', () => sendChat());
+    $('chat-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendChat();
+      }
+    });
+    document.querySelectorAll('.chip').forEach((c) => {
+      c.addEventListener('click', () => sendChat(c.dataset.prompt));
+    });
+
+    // Tensor Core Bench
+    $('btn-refresh-gpu').addEventListener('click', refreshGpu);
+    $('btn-run-tc').addEventListener('click', async () => {
+      const btn = $('btn-run-tc');
+      btn.disabled = true;
+      $('tc-log').textContent = 'Running CUDA 13.5 sm_120a Tensor Core benchmark (BF16 / INT8 / NVFP4)…';
+      try {
+        const r = await api('/v1/gpu/bench-tc', { method: 'POST', body: '{}' });
+        if (r.ok) {
+          const bf16 = Number(r.data.bf16_tflops || 0);
+          const int8 = Number(r.data.int8_tops || 0);
+          const nvfp4 = Number(r.data.nvfp4_tflops || 0);
+          const peak = Math.max(bf16, int8, nvfp4, 1);
+          $('val-bf16').textContent = bf16 > 0 ? `${bf16.toFixed(2)} TFLOPS` : '—';
+          $('val-int8').textContent = int8 > 0 ? `${int8.toFixed(2)} TOPS` : '—';
+          $('val-nvfp4').textContent = nvfp4 > 0 ? `${nvfp4.toFixed(2)} TFLOPS` : '—';
+          $('bar-bf16').style.width = `${Math.round((bf16 / peak) * 100)}%`;
+          $('bar-int8').style.width = `${Math.round((int8 / peak) * 100)}%`;
+          $('bar-nvfp4').style.width = `${Math.round((nvfp4 / peak) * 100)}%`;
+          $('tc-log').textContent = r.data.log || r.data.result || JSON.stringify(r.data, null, 2);
+        } else {
+          $('tc-log').textContent = 'Benchmark error: ' + JSON.stringify(r.data);
+        }
+      } finally {
+        btn.disabled = false;
+        refreshGpu();
+      }
+    });
+
+    // Memory45 & LoRA
+    $('btn-refresh-mem').addEventListener('click', refreshHealthAndState);
+    $('btn-mem-add').addEventListener('click', async () => {
+      const text = $('mem-add-text').value.trim();
+      if (!text) return;
+      const importance = parseFloat($('mem-add-imp').value) || 0.85;
+      const r = await api('/v1/memory/add', { method: 'POST', body: JSON.stringify({ text, importance }) });
+      if (r.ok) {
+        $('mem-add-text').value = '';
+        refreshHealthAndState();
+      }
+    });
+    $('btn-mem-recall').addEventListener('click', async () => {
+      const query = $('mem-recall-q').value.trim();
+      const r = await api('/v1/memory/recall', { method: 'POST', body: JSON.stringify({ query }) });
+      const box = $('mem-hits');
+      if (!r.ok || !Array.isArray(r.data.hits) || r.data.hits.length === 0) {
+        box.innerHTML = '<div class="kv-label">No matching memories found.</div>';
+        return;
+      }
+      box.innerHTML = r.data.hits.map((h) =>
+        `<div class="list-item"><div><div>${escapeHtml(h.text)}</div><div style="font-size:11.5px;color:var(--text-tertiary);font-family:var(--font-mono);">id=${h.id} · imp=${h.importance} · str=${h.strength}</div></div></div>`
+      ).join('');
+    });
+    $('btn-lora-step').addEventListener('click', async () => {
+      const text = $('lora-text').value.trim() || 'positive reinforcement';
+      const reward = parseFloat($('lora-r').value) || 0.5;
+      await api('/v1/lora/reinforce', { method: 'POST', body: JSON.stringify({ text, reward }) });
+      $('lora-text').value = '';
+      refreshHealthAndState();
+    });
+    $('btn-lora-rollback').addEventListener('click', async () => {
+      await api('/v1/lora/rollback', { method: 'POST', body: '{}' });
+      refreshHealthAndState();
+    });
+    $('btn-voice-say').addEventListener('click', async () => {
+      const text = $('voice-text').value.trim();
+      if (!text) return;
+      $('voice-status').textContent = 'Synthesizing…';
+      const r = await api('/v1/voice/say', { method: 'POST', body: JSON.stringify({ text }) });
+      $('voice-status').textContent = r.ok ? (r.data.detail || 'OK') : ('Error: ' + (r.data.error || r.status));
+    });
+    $('btn-refresh-models').addEventListener('click', refreshModels);
+
+    // Boot
+    refreshHealthAndState();
+    refreshGpu();
+    refreshModels();
+    setInterval(refreshGpu, 5000);
+    setInterval(refreshHealthAndState, 10000);
+  </script>
+</body>
+</html>

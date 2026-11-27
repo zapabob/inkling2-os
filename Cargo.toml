@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/inkling2-init",
+    "crates/inkling2-shell",
+    "crates/inkling2-companion",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Inkling2-OS Engineering"]
