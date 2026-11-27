@@ -38,10 +38,17 @@ function Get-PushedRevision([string]$Repo, [string]$Slug, [string]$SourceDigest,
         throw "Unexpected origin for $Slug."
     }
     $sha = git -C $Repo rev-parse HEAD
-    $branch = git -C $Repo symbolic-ref HEAD
-    $published = git -C $Repo ls-remote --exit-code origin $branch
-    if (($published -split '\s+', 2)[0] -ne $sha) { throw "Push the qualified commit for $Slug." }
+    $published = git -C $Repo ls-remote --exit-code origin refs/heads/main
+    if (($published -split '\s+', 2)[0] -ne $sha) { throw "Push the qualified commit to main for $Slug." }
     $sha
+}
+
+function Assert-GreenWorkflow([string]$Slug, [string]$Sha, [string]$Workflow, [string]$Event) {
+    $runs = gh run list --repo $Slug --workflow $Workflow --branch main --commit $Sha --event $Event --limit 1 --json status,conclusion,url
+    $latest = $runs | ConvertFrom-Json | Select-Object -First 1
+    if ($latest.status -ne 'completed' -or $latest.conclusion -ne 'success') {
+        throw "A successful $Workflow run ($Event) on main at $Sha is required for $Slug. $($latest.url)"
+    }
 }
 
 if ($receipt.schema -ne 1 -or @($receipt.additional_models).Count -ne 2 -or $receipt.model_sha256 -notmatch '^[0-9A-Fa-f]{64}$') {
@@ -52,6 +59,9 @@ $osScope = if ($windowsOnly) { 'WindowsOS' } else { 'All' }
 if ($Stage -eq 'Publish') {
     $osCommit = Get-PushedRevision $osRepo 'zapabob/inkling2-os' $receipt.sources.os $osScope
     $engineCommit = Get-PushedRevision $engineSource 'zapabob/inkling2-cuda-engine' $receipt.sources.engine
+    Assert-GreenWorkflow 'zapabob/inkling2-cuda-engine' $engineCommit 'release.yml' 'push'
+    Assert-GreenWorkflow 'zapabob/inkling2-os' $osCommit 'validation.yml' 'push'
+    Assert-GreenWorkflow 'zapabob/inkling2-os' $osCommit 'release.yml' 'workflow_dispatch'
 } elseif ((Get-ReleaseSourceDigest $engineSource) -ne $receipt.sources.engine -or
           (Get-ReleaseSourceDigest $osRepo $osScope) -ne $receipt.sources.os) {
     throw 'Installation inputs differ from the tested source.'

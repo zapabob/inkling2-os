@@ -67,7 +67,17 @@ output directory. Each model needs its matching sibling `tokenizer.json`.
 ./scripts/qualify-native-pair.ps1 -WindowsOnly -EngineRepo $engine -Model $sq10 -AdditionalModel @($sq15, $sq20) -CudaRoot $env:CUDA_PATH -OutputDir $qualification
 ```
 
-After both suites pass, commit and push each qualified tree on its own branch.
+After both suites pass, push each tested commit to its repository's `main`.
+The engine push builds the CUDA runtime, checks the token protocol and stages the source.
+The OS push runs both Rust workspace jobs and the boot tests. Start the OS packaging
+workflow on the same main revision and check the resulting run:
+
+```powershell
+gh workflow run release.yml --repo zapabob/inkling2-os --ref main
+gh run list --repo zapabob/inkling2-os --branch main --commit (git rev-parse HEAD)
+gh run list --repo zapabob/inkling2-cuda-engine --branch main --commit (git -C $engine rev-parse HEAD)
+```
+
 The receipt binds the source, model files, ZIP archives and binaries to SHA-256 digests.
 Requalify after changing packaged source.
 
@@ -80,7 +90,8 @@ Invoke-RestMethod http://127.0.0.1:18083/v1/engine/status
 
 Set `$newWindowsTag` to a fresh tag such as `v0.1.1-windows.2`. Installation saves the
 previous binaries in the qualification directory. Verify a real chat reply and the desktop
-before publication. Publication checks the pushed revisions and installed executable hashes.
+before publication. Publication checks both remote main revisions, all three successful
+workflow runs on those revisions, and the installed executable hashes.
 
 ### Web search
 
@@ -115,7 +126,7 @@ Both Linux images include Wine for 64-bit Windows command-line programs. At the 
 
 Run `scripts/qualify-native-pair.ps1` from the x64 Visual Studio Developer PowerShell with the engine checkout, original SQ-10 model, CUDA 13.5 toolkit and an ignored output directory. The gate runs the Rust workspace and tokenizer suites, the CUDA tests and real SQ-10 reference check, then the BIOS, UEFI and installed-disk boot tests. It writes a qualification receipt only after a successful run. The receipt binds both source trees and the packaged assets to checksums.
 
-Commit and push each qualified tree on its own branch. `scripts/promote-native-pair.ps1 -Stage Install` checks the qualified source and the archive hashes, replaces the local Windows console binaries, and keeps rollback copies. For the dedicated USB, `scripts/prepare-private-usb.ps1` builds and boots the private disk bundle in QEMU. Pass its verification hashes and original model path to `scripts/write-installed-usb.ps1`. `scripts/promote-native-pair.ps1 -Stage Publish` checks the installed Windows binaries and the verified USB write log before publishing the paired releases. The public ISO supports diagnostics. The private USB carries its own CUDA and model assets.
+Publish from the qualified main revisions after their CI and staging workflows pass. `scripts/promote-native-pair.ps1 -Stage Install` checks the qualified source and the archive hashes, replaces the local Windows console binaries, and keeps rollback copies. For the dedicated USB, `scripts/prepare-private-usb.ps1` builds and boots the private disk bundle in QEMU. Pass its verification hashes and original model path to `scripts/write-installed-usb.ps1`. `scripts/promote-native-pair.ps1 -Stage Publish` checks the installed Windows binaries and the verified USB write log before publishing the paired releases. The public ISO supports diagnostics. The private USB carries its own CUDA and model assets.
 
 Read the [architecture](docs/ARCHITECTURE.md), [boot process](docs/BOOT_PROCESS.md), [security model](docs/SECURITY.md), [hardware support](docs/HARDWARE_COMPATIBILITY.md), [limitations](docs/KNOWN_LIMITATIONS.md) and [validation record](docs/V0.1.1_VALIDATION.md).
 
