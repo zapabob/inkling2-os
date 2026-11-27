@@ -6,13 +6,18 @@ Inkling2-OS is a native Linux appliance and Windows console for SC117 Inkling-2-
 | --- | --- |
 | Implemented | Loopback console, optional scoped credentials, read-only document previews, public HTTPS document browsing, RustXNG search and measured-GPU admission. |
 | Verified | Windows console, key-free browser and Finder, scoped API and Strata 0.8.6 provider registration. Windows SQ-10, SQ-15 and SQ-20 generated the expected digit and stopped on the arithmetic fixture. Earlier diagnostic media passed QEMU BIOS and UEFI boot. |
-| Experimental | Short text inference using the standalone Windows engine's stdin protocol. The OpenAI-compatible event stream emits the answer once generation finishes. |
-| Pending qualification | Physical Linux CUDA inference, 65,536 and 131,072 token contexts, and matched hardware benchmarks. |
+| Experimental | The OpenAI-compatible event stream emits the answer once native generation finishes. |
+| Context | Native desktop chats support up to 131,072 tokens including the chat template and reserved output. Full-length document quality and throughput require a separate end-to-end evaluation. |
+| Pending qualification | Physical Linux CUDA inference and matched hardware benchmarks. |
 | Private Linux USB | UEFI installation with the Linux CUDA engine, NVIDIA modules, a local graphical console and an offline model volume. See the validation record for the checks run on this image. |
 
 ## Windows console
 
 ### Resident desktop on Windows
+
+Open **Inkling2 Desktop → Inkling2 に話す** and choose **Context**. Auto sizes the resident worker for the tokenized conversation. Selecting **131,072 tokens** requests the full window immediately. Native chat requests accept the same setting as `"context_length": 131072`. Each successful reply and its user message stay in this tab until you start a new conversation or switch models. The output setting reserves up to 128 tokens inside the selected window.
+
+The HTTP model list advertises the native context limit. `GET /v1/engine/status` reports the current resident capacity and worker PID. Increasing capacity can reload the model. The bridge checks measured GPU headroom before loading. Long prompts are processed locally and can take substantially longer than short chats.
 
 Extract the Windows console archive into an empty directory, then extract the matching
 engine archive into its `bin` directory. With PowerShell 7.4 or newer, run the desktop

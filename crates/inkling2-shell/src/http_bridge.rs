@@ -180,6 +180,39 @@ fn send_asset(stream: &mut TcpStream, mime: &str, html_body: &str) {
     let _ = stream.flush();
 }
 
+fn completion_json(model: &str, reply: native_inference::NativeReply) -> Value {
+    json!({
+        "id":"chatcmpl-inkling2", "object":"chat.completion", "model":model,
+        "choices":[{"index":0,"message":{"role":"assistant","content":reply.text},"finish_reason":reply.finish}],
+        "usage":{"prompt_tokens":reply.prompt_tokens,"completion_tokens":reply.completion_tokens,
+                 "total_tokens":reply.prompt_tokens + reply.completion_tokens}
+    })
+}
+
+// Close-delimited JSON accepts leading whitespace. A heartbeat keeps desktop fetch
+// alive during long native prefill, without inserting bytes into the model output.
+fn start_desktop_body(
+    stream: &mut TcpStream,
+) -> std::io::Result<(std::sync::mpsc::Sender<()>, thread::JoinHandle<()>)> {
+    let mut socket = stream.try_clone()?;
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n{SECURITY_HEADERS}Connection: close\r\n\r\n"
+    )?;
+    let (stop, rx) = std::sync::mpsc::channel();
+    let writer = thread::spawn(move || {
+        while matches!(
+            rx.recv_timeout(Duration::from_secs(15)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ) {
+            if socket.write_all(b"\n").is_err() {
+                break;
+            }
+        }
+    });
+    Ok((stop, writer))
+}
+
 fn send_sse_completion(stream: &mut TcpStream, model: &str, reply: &native_inference::NativeReply) {
     let chunk1 = format!(
         "data: {{\"id\":\"chatcmpl-inkling2\",\"object\":\"chat.completion.chunk\",\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"{}\"}},\"finish_reason\":null}}]}}\n\n",
@@ -354,18 +387,22 @@ fn ensure_resident(
     ctx: &BridgeContext,
     slot: &mut Option<ResidentEngine>,
     model: &StrataModelInfo,
+    capacity: usize,
 ) -> Result<(), native_inference::InferenceError> {
-    if slot
-        .as_mut()
-        .is_some_and(|worker| worker.model == model.path && worker.live())
-    {
+    if slot.as_mut().is_some_and(|worker| {
+        worker.model == model.path && worker.capacity >= capacity && worker.live()
+    }) {
         return Ok(());
     }
     // Release the previous model before measuring the budget for its replacement.
     slot.take();
-    native_inference::admit_model(model.trunk_bytes, read_free_vram())?;
-    let worker = ResidentEngine::start(&ctx.engine_bin, &model.path)?;
-    if worker.exchange("warmup\n".to_owned())?.trim_end() != "ready" {
+    native_inference::admit_model(model.trunk_bytes, read_free_vram(), capacity)?;
+    let worker = ResidentEngine::start(&ctx.engine_bin, &model.path, capacity)?;
+    if worker
+        .exchange("warmup\n".to_owned(), native_inference::LOAD_TIMEOUT)?
+        .trim_end()
+        != "ready"
+    {
         return Err((
             "503 Service Unavailable",
             "installed engine does not support resident token requests",
@@ -452,7 +489,7 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                 if let Some(worker) = slot.as_mut()
                     && worker.live()
                 {
-                    json!({"state":"ready", "pid":worker.pid(), "model":worker.model.file_stem().and_then(|v| v.to_str())})
+                    json!({"state":"ready", "pid":worker.pid(), "context_length":worker.capacity, "model":worker.model.file_stem().and_then(|v| v.to_str())})
                 } else {
                     json!({"state":if ctx.resident { "idle" } else { "on-demand" }})
                 }
@@ -522,11 +559,8 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("inkling-2-mini");
-                items.push(format!(
-                    r#"{{"id":"{}","object":"model","owned_by":"SC117-Inkling2-OS","bytes":{}}}"#,
-                    json_escape(id),
-                    m.file_bytes
-                ));
+                items.push(json!({"id":id, "object":"model", "owned_by":"SC117-Inkling2-OS",
+                    "context_length": crate::native_prompt::model_context_limit(&m), "bytes":m.file_bytes}).to_string());
             }
             let json = format!(r#"{{"object":"list","data":[{}]}}"#, items.join(","));
             send_json(&mut stream, "200 OK", &json);
@@ -936,14 +970,42 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                 send_error(&mut stream, "404 Not Found", "model absent or ambiguous");
                 return;
             };
-            let result = native_inference::prompt_and_limit(&body).and_then(|(prompt, max)| {
-                if ctx.resident {
-                    ensure_resident(ctx, &mut slot, &model)?;
-                } else {
-                    native_inference::admit_model(model.trunk_bytes, read_free_vram())?;
+            let mut desktop_body = None;
+            let result = native_inference::prompt_and_limit(&body).and_then(|(messages, max)| {
+                let prompt = crate::native_prompt::prepare(&model, messages, max)?;
+                let mut capacity = native_inference::context_capacity(
+                    &body,
+                    prompt.input_ids.len() + max as usize,
+                )?;
+                if body.get("context_length").is_some() && capacity > prompt.model_limit {
+                    return Err((
+                        "400 Bad Request",
+                        "requested context exceeds the model manifest limit",
+                    ));
                 }
-                let result =
-                    native_inference::generate(&ctx.engine_bin, &model, prompt, max, slot.as_mut());
+                capacity = capacity.min(prompt.model_limit);
+                if !streaming
+                    && body["desktop_keepalive"].as_bool() == Some(true)
+                    && prompt.input_ids.len() > 512
+                {
+                    desktop_body =
+                        Some(start_desktop_body(&mut stream).map_err(|_| {
+                            ("503 Service Unavailable", "desktop connection closed")
+                        })?);
+                }
+                if ctx.resident {
+                    ensure_resident(ctx, &mut slot, &model, capacity)?;
+                } else {
+                    native_inference::admit_model(model.trunk_bytes, read_free_vram(), capacity)?;
+                }
+                let result = native_inference::generate(
+                    &ctx.engine_bin,
+                    &model,
+                    &prompt,
+                    max,
+                    capacity,
+                    slot.as_mut(),
+                );
                 if result
                     .as_ref()
                     .is_err_and(|(code, _)| code.starts_with('5'))
@@ -952,14 +1014,23 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                 }
                 result
             });
+            if let Some((stop, writer)) = desktop_body {
+                drop(stop);
+                let _ = writer.join();
+                let value = match result {
+                    Ok(reply) => completion_json(model_id, reply),
+                    Err((status, message)) => json!({"status":status,"error":message}),
+                };
+                let _ = write!(stream, "{value}");
+                return;
+            }
             match result {
                 Ok(reply) if streaming => send_sse_completion(&mut stream, model_id, &reply),
-                Ok(reply) => send_json(&mut stream, "200 OK", &json!({
-                    "id": "chatcmpl-inkling2",
-                    "object": "chat.completion",
-                    "model": model_id,
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": reply.text}, "finish_reason": reply.finish}]
-                }).to_string()),
+                Ok(reply) => send_json(
+                    &mut stream,
+                    "200 OK",
+                    &completion_json(model_id, reply).to_string(),
+                ),
                 Err((status, message)) => send_error(&mut stream, status, message),
             }
         }
@@ -1088,7 +1159,7 @@ pub fn run_http_bridge(
             if let Some(model) = selected.next().filter(|_| selected.next().is_none())
                 && let Ok(mut slot) = state.inference_slot.lock()
                 && slot.is_none()
-                && let Err((_, reason)) = ensure_resident(&state, &mut slot, model)
+                && let Err((_, reason)) = ensure_resident(&state, &mut slot, model, 4096)
             {
                 eprintln!("Model preload: {reason}");
             }

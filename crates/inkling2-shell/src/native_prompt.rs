@@ -11,7 +11,7 @@ use crate::native_inference::InferenceError;
 use crate::strata_catalog::StrataModelInfo;
 
 const MAX_MODEL_METADATA: u64 = 64 * 1024 * 1024;
-const MAX_CONTEXT_IDS: usize = 4096;
+pub const MAX_CONTEXT_IDS: usize = 131_072;
 const MODEL_CONFIG_ERROR: InferenceError = (
     "503 Service Unavailable",
     "model chat template or tokenizer does not match the Inkling-2 configuration",
@@ -21,6 +21,7 @@ pub struct NativePrompt {
     pub tokenizer: Tokenizer,
     pub input_ids: Vec<u32>,
     pub stop_ids: Vec<u32>,
+    pub model_limit: usize,
 }
 
 fn render(template: &str, messages: &[Value]) -> Result<String, Error> {
@@ -71,6 +72,18 @@ fn load_manifest(model: &StrataModelInfo) -> Option<Value> {
         return None;
     }
     serde_json::from_slice(&bytes).ok()
+}
+
+fn manifest_limit(manifest: &Value) -> usize {
+    manifest
+        .pointer("/config/text_config/model_max_length")
+        .and_then(Value::as_u64)
+        .unwrap_or(4096)
+        .min(MAX_CONTEXT_IDS as u64) as usize
+}
+
+pub fn model_context_limit(model: &StrataModelInfo) -> Option<usize> {
+    load_manifest(model).map(|m| manifest_limit(&m))
 }
 
 pub fn prepare(
@@ -133,16 +146,18 @@ pub fn prepare(
     if !input_ids.ends_with(&[model_token, text_token]) {
         return Err(MODEL_CONFIG_ERROR);
     }
-    if input_ids.len() + max_output as usize > MAX_CONTEXT_IDS {
+    let model_limit = manifest_limit(&manifest);
+    if input_ids.len() as u64 + max_output > model_limit as u64 {
         return Err((
             "400 Bad Request",
-            "request exceeds the native 4096-token context",
+            "prompt and reserved output exceed the model context (maximum 131072 tokens)",
         ));
     }
     Ok(NativePrompt {
         tokenizer,
         input_ids,
         stop_ids,
+        model_limit,
     })
 }
 
@@ -176,6 +191,17 @@ mod tests {
             ]
         );
         assert_eq!(prompt.stop_ids, [200006, 200010, 199999]);
+        // Each repeated " x" adds exactly one token with the shipping tokenizer.
+        let first = [json!({"role":"user", "content":" x"})];
+        let small = prepare(&model, &first, 1).map_err(|(_, error)| error.to_owned())?;
+        let repetitions = MAX_CONTEXT_IDS - small.input_ids.len();
+        let boundary = [json!({"role":"user", "content":" x".repeat(repetitions)})];
+        let long = prepare(&model, &boundary, 1).map_err(|(_, error)| error.to_owned())?;
+        assert_eq!(long.input_ids.len() + 1, MAX_CONTEXT_IDS);
+        assert!(matches!(
+            prepare(&model, &boundary, 2),
+            Err(("400 Bad Request", _))
+        ));
         assert!(matches!(
             prepare(
                 &model,

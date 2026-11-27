@@ -15,11 +15,33 @@ use crate::strata_catalog::StrataModelInfo;
 
 pub const MAX_OUTPUT_TOKENS: u64 = 128;
 const DEFAULT_OUTPUT_TOKENS: u64 = 32;
-const MAX_PROMPT_BYTES: usize = 1536;
+const MAX_PROMPT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: u64 = 64 * 1024;
 const MIB: u64 = 1024 * 1024;
 // Each request loads the model. The reported v0.1.0 cold load alone took about 390 seconds.
-const NATIVE_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+pub const LOAD_TIMEOUT: Duration = Duration::from_secs(600);
+
+pub fn request_timeout(input_tokens: usize) -> Duration {
+    LOAD_TIMEOUT + Duration::from_secs((input_tokens.saturating_sub(512) as u64) * 4)
+}
+
+pub fn context_capacity(body: &Value, required: usize) -> Result<usize, InferenceError> {
+    let max = native_prompt::MAX_CONTEXT_IDS;
+    if required > max {
+        return Err(("400 Bad Request", "prompt and output exceed 131072 tokens"));
+    }
+    match body.get("context_length") {
+        None => Ok(required.max(4096).next_power_of_two()),
+        Some(value) => value
+            .as_u64()
+            .filter(|n| (1..=max as u64).contains(n) && *n >= required as u64)
+            .map(|n| n as usize)
+            .ok_or((
+                "400 Bad Request",
+                "context_length must fit the prompt and output and be at most 131072",
+            )),
+    }
+}
 
 pub type InferenceError = (&'static str, &'static str);
 const UNAVAILABLE: InferenceError = (
@@ -45,7 +67,7 @@ pub fn prompt_and_limit(body: &Value) -> Result<(&[Value], u64), InferenceError>
         .get("messages")
         .and_then(Value::as_array)
         .ok_or(BAD_REQUEST)?;
-    if messages.is_empty() || messages.len() > 32 {
+    if messages.is_empty() || messages.len() > 1024 {
         return Err(BAD_REQUEST);
     }
     if body
@@ -79,7 +101,7 @@ pub fn prompt_and_limit(body: &Value) -> Result<(&[Value], u64), InferenceError>
     if content_bytes > MAX_PROMPT_BYTES {
         return Err((
             "400 Bad Request",
-            "input exceeds the native adapter's 1536-byte limit",
+            "input exceeds the 16 MiB chat transport limit",
         ));
     }
     let max = match body
@@ -98,14 +120,20 @@ pub fn prompt_and_limit(body: &Value) -> Result<(&[Value], u64), InferenceError>
     Ok((messages, max))
 }
 
-pub fn admit_model(trunk_bytes: u64, free_mib: Option<u64>) -> Result<(), InferenceError> {
+pub fn admit_model(
+    trunk_bytes: u64,
+    free_mib: Option<u64>,
+    capacity: usize,
+) -> Result<(), InferenceError> {
     // Expert weights spill to host RAM and storage. Only the trunk and working memory must fit.
     admit_vram(
         free_mib.and_then(|free| free.checked_mul(MIB)),
         VramRequest {
             weights: trunk_bytes,
             experts: 128 * MIB, // Two top-8 device staging buffers of up to 8 MiB per expert.
-            kv_cache: 396 * MIB, // 48 slots, 4096 positions, eight 128-wide K8V8 heads plus scales.
+            // SC117 has eight global and forty sliding logical visits. Each head stores
+            // 128 int8 values and one f32 scale per position for both K and V.
+            kv_cache: (8 * capacity as u64 + 40 * capacity.min(1024) as u64) * 8 * 2 * (128 + 4),
             activations: 128 * MIB,
             cuda_workspace: 256 * MIB,
             runtime: 128 * MIB,
@@ -124,6 +152,8 @@ pub fn admit_model(trunk_bytes: u64, free_mib: Option<u64>) -> Result<(), Infere
 pub struct NativeReply {
     pub text: String,
     pub finish: &'static str,
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
 }
 
 fn read_reply(line: &str, prompt: &NativePrompt, max: u64) -> Option<NativeReply> {
@@ -155,20 +185,26 @@ fn read_reply(line: &str, prompt: &NativePrompt, max: u64) -> Option<NativeReply
         return None;
     }
     let text = prompt.tokenizer.decode(&ids, false).ok()?;
-    Some(NativeReply { text, finish })
+    Some(NativeReply {
+        text,
+        finish,
+        prompt_tokens: prompt.input_ids.len(),
+        completion_tokens: ids.len(),
+    })
 }
 
 pub fn generate(
     engine: &Path,
     model: &StrataModelInfo,
-    messages: &[Value],
+    prompt: &NativePrompt,
     max: u64,
+    capacity: usize,
     resident: Option<&mut crate::resident_engine::ResidentEngine>,
 ) -> Result<NativeReply, InferenceError> {
     if !engine.is_file() {
         return Err(("503 Service Unavailable", "native executable is missing"));
     }
-    let prompt = native_prompt::prepare(model, messages, max)?;
+    let timeout = request_timeout(prompt.input_ids.len());
     let csv = |ids: &[u32]| ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
     let request = format!(
         "{max}\t{}\t{}\n",
@@ -176,8 +212,8 @@ pub fn generate(
         csv(&prompt.input_ids)
     );
     if let Some(worker) = resident {
-        let line = worker.exchange(request)?;
-        return read_reply(&line, &prompt, max).ok_or((
+        let line = worker.exchange(request, timeout)?;
+        return read_reply(&line, prompt, max).ok_or((
             "502 Bad Gateway",
             "the model returned an invalid output token sequence",
         ));
@@ -185,6 +221,8 @@ pub fn generate(
     let mut child = Command::new(engine)
         .arg("generate-token-ids")
         .arg(&model.path)
+        .arg("--context")
+        .arg(capacity.to_string())
         .env_remove("INKLING2_BRIDGE_TOKEN")
         .env_remove("INKLING2_INFERENCE_TOKEN")
         .env_remove("INKLING2_UPSTREAM_API_KEY")
@@ -211,7 +249,7 @@ pub fn generate(
         })();
         let _ = tx.send(result);
     });
-    let result = rx.recv_timeout(NATIVE_REQUEST_TIMEOUT);
+    let result = rx.recv_timeout(timeout);
     // Always reap the owned process, including when it stops responding.
     let _ = child.kill();
     let _ = child.wait();
@@ -220,11 +258,11 @@ pub fn generate(
         .map_err(|error| match error {
             mpsc::RecvTimeoutError::Timeout => (
                 "504 Gateway Timeout",
-                "native model loading and generation exceeded the 600-second deadline",
+                "native model loading and generation exceeded the request deadline",
             ),
             mpsc::RecvTimeoutError::Disconnected => UNAVAILABLE,
         })?
-        .and_then(|line| read_reply(&line, &prompt, max))
+        .and_then(|line| read_reply(&line, prompt, max))
         .ok_or(UNAVAILABLE)
 }
 
@@ -253,7 +291,10 @@ mod tests {
         assert!(
             prompt_and_limit(&json!({"messages": body["messages"], "max_tokens": 129})).is_err()
         );
-        assert!(admit_model(10 * 1024 * MIB, Some(3481)).is_err());
-        assert!(admit_model(10 * 1024 * MIB, Some(15000)).is_ok());
+        assert!(admit_model(10 * 1024 * MIB, Some(3481), 4096).is_err());
+        assert!(admit_model(10 * 1024 * MIB, Some(15000), 4096).is_ok());
+        assert_eq!(context_capacity(&json!({}), 131_072), Ok(131_072));
+        assert!(context_capacity(&json!({}), 131_073).is_err());
+        assert!(context_capacity(&json!({"context_length":4096}), 4097).is_err());
     }
 }

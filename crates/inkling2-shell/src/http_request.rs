@@ -102,8 +102,16 @@ pub fn read_request(reader: &mut impl BufRead, addr: SocketAddr) -> Result<Reque
     let length = length
         .map_or(Ok(0), |value| value.parse::<usize>())
         .map_err(|_| BAD_HEADER)?;
-    if length > MAX_BODY_BYTES {
-        return Err(("413 Payload Too Large", "request body exceeds 256 KiB"));
+    let limit = if method == "POST" && path == "/v1/chat/completions" {
+        16 * 1024 * 1024
+    } else {
+        MAX_BODY_BYTES
+    };
+    if length > limit {
+        return Err((
+            "413 Payload Too Large",
+            "request body exceeds the route limit",
+        ));
     }
     if method == "POST"
         && !content_type.as_deref().is_some_and(|t| {

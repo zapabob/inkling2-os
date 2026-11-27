@@ -201,7 +201,7 @@
     // Chat
     function appendMessage(role, content, reasoning, meta) {
       const empty = $('chat-empty');
-      if (empty) empty.remove();
+      if (empty) empty.style.display = 'none';
       const wrap = document.createElement('div');
       wrap.className = 'msg ' + role;
 
@@ -234,10 +234,20 @@
       sc.scrollTop = sc.scrollHeight;
     }
 
+    let turns = [];
+    function newChat() {
+      turns = [];
+      $('chat-scroll').querySelectorAll('.msg').forEach(node => node.remove());
+      $('chat-empty').style.removeProperty('display');
+      $('chat-status').textContent = '';
+    }
+    $('btn-new-chat').addEventListener('click', newChat);
+    $('model-select').addEventListener('change', newChat);
+
     async function sendChat(textOverride) {
       const input = $('chat-input');
       const text = (textOverride ?? input.value).trim();
-      if (!text) return;
+      if (!text || $('btn-send').disabled) return;
       if (!localConsole && !consoleToken) { accessDialog.showModal(); return; }
       if (!usingUpstream && $('opt-effort').value !== 'none') {
         $('chat-status').textContent = 'Set Reasoning to none for the native engine.';
@@ -252,6 +262,9 @@
 
       const btn = $('btn-send');
       btn.disabled = true;
+      $('btn-new-chat').disabled = true;
+      $('model-select').disabled = true;
+      const messages = [...turns, { role: 'user', content: text }];
       const t0 = performance.now();
       $('chat-status').textContent = 'Waiting for inference…';
 
@@ -260,7 +273,10 @@
           method: 'POST',
           body: JSON.stringify({
             model: $('model-select').value,
-            messages: [{ role: 'user', content: text }],
+            messages,
+            ...(!usingUpstream ? {desktop_keepalive: true} : {}),
+            ...(!usingUpstream && $('opt-context').value !== 'auto'
+              ? {context_length: Number($('opt-context').value)} : {}),
             max_tokens: Number($('opt-max-tokens').value),
             reasoning_effort: $('opt-effort').value,
           }),
@@ -268,6 +284,7 @@
         const dt = ((performance.now() - t0) / 1000).toFixed(2);
         if (res.ok && res.data.choices && res.data.choices[0]) {
           const msg = res.data.choices[0].message || {};
+          if (typeof msg.content === 'string') turns = [...messages, {role: 'assistant', content: msg.content}];
           const usage = res.data.usage;
           const meta = usage
             ? `${dt}s · prompt ${usage.prompt_tokens || 0} / comp ${usage.completion_tokens || 0} tok`
@@ -283,6 +300,8 @@
         $('chat-status').textContent = 'Disconnected';
       } finally {
         btn.disabled = false;
+        $('btn-new-chat').disabled = false;
+        $('model-select').disabled = false;
         refreshHealthAndState();
       }
     }

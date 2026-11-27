@@ -16,17 +16,20 @@ const LOST: InferenceError = (
 
 pub struct ResidentEngine {
     pub model: PathBuf,
+    pub capacity: usize,
     child: Child,
     requests: Option<Sender<Request>>,
     reader: Option<JoinHandle<()>>,
 }
 
 impl ResidentEngine {
-    pub fn start(binary: &Path, model: &Path) -> Result<Self, InferenceError> {
+    pub fn start(binary: &Path, model: &Path, capacity: usize) -> Result<Self, InferenceError> {
         let mut command = Command::new(binary);
         command
             .arg("serve-token-ids")
             .arg(model)
+            .arg("--context")
+            .arg(capacity.to_string())
             .env_remove("INKLING2_BRIDGE_TOKEN")
             .env_remove("INKLING2_INFERENCE_TOKEN")
             .env_remove("INKLING2_UPSTREAM_API_KEY")
@@ -63,6 +66,7 @@ impl ResidentEngine {
         });
         Ok(Self {
             model: model.into(),
+            capacity,
             child,
             requests: Some(sender),
             reader: Some(reader),
@@ -77,7 +81,7 @@ impl ResidentEngine {
         self.child.id()
     }
 
-    pub fn exchange(&self, request: String) -> Result<String, InferenceError> {
+    pub fn exchange(&self, request: String, timeout: Duration) -> Result<String, InferenceError> {
         let (tx, rx) = mpsc::channel();
         self.requests
             .as_ref()
@@ -85,7 +89,7 @@ impl ResidentEngine {
             .send((request, tx))
             .map_err(|_| LOST)?;
         let line = rx
-            .recv_timeout(Duration::from_secs(600))
+            .recv_timeout(timeout)
             .map_err(|e| match e {
                 mpsc::RecvTimeoutError::Timeout => {
                     ("504 Gateway Timeout", "resident engine timed out")
