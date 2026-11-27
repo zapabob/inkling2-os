@@ -11,6 +11,7 @@ $stage = Join-Path $OutDir ('stage-' + [IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Force -Path $OutDir, "$stage/bin", "$stage/scripts", "$stage/notices" | Out-Null
 Copy-Item -LiteralPath (Join-Path $BinaryDir 'inkling2-shell.exe') -Destination "$stage/bin"
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'start-windows-console.ps1') -Destination "$stage/scripts"
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'start-windows-desktop.ps1') -Destination "$stage/scripts"
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'start-rustxng-full.ps1') -Destination "$stage/scripts"
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'copy-console-token.cmd') -Destination "$stage/scripts"
 foreach ($file in 'LICENSE', 'README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md') {

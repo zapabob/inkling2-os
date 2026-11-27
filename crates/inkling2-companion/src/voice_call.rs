@@ -4,8 +4,21 @@
 //! 1. Local VOICEVOX Engine (`http://127.0.0.1:50021`, speaker 8 春日部つむぎ / speaker 3 ずんだもん)
 //! 2. Windows native Japanese female SAPI (`Microsoft Haruka Desktop`) or Linux `piper`/`espeak-ng`
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
+
+fn voice_command(program: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut command = Command::new(program);
+        command.creation_flags(0x08000000);
+        command
+    }
+    #[cfg(not(windows))]
+    Command::new(program)
+}
 
 /// Voice persona configuration.
 #[derive(Debug, Clone)]
@@ -39,7 +52,7 @@ pub fn speak_text(
     }
 
     // 1. Probe local VOICEVOX loopback server
-    let probe = Command::new("curl")
+    let probe = voice_command("curl")
         .args([
             "--disable",
             "--noproxy",
@@ -49,6 +62,7 @@ pub fn speak_text(
             "1",
             "--max-time",
             "2",
+            "--fail",
             &format!("{}/version", persona.voicevox_url),
         ])
         .output();
@@ -60,7 +74,7 @@ pub fn speak_text(
             "{}/audio_query?speaker={}",
             persona.voicevox_url, persona.voicevox_speaker_id
         );
-        let q = Command::new("curl")
+        let q = voice_command("curl")
             .args([
                 "--disable",
                 "--noproxy",
@@ -71,6 +85,7 @@ pub fn speak_text(
                 "--max-time",
                 "10",
                 "--get",
+                "--fail",
                 "--data-urlencode",
                 &format!("text={text}"),
                 &q_url,
@@ -85,7 +100,7 @@ pub fn speak_text(
             let target_wav = out_wav
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| std::env::temp_dir().join("inkling2_voice.wav"));
-            let synth = Command::new("curl")
+            let synth = voice_command("curl")
                 .args([
                     "--disable",
                     "--noproxy",
@@ -136,7 +151,7 @@ try {
   $s.Rate = 1
   $s.Speak($env:INKLING2_TTS_TEXT)
 } finally { $s.Dispose() }"#;
-        let mut command = Command::new("powershell");
+        let mut command = voice_command("powershell");
         command
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("INKLING2_TTS_TEXT", text)

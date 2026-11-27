@@ -28,6 +28,8 @@ use crate::hardened_fs::{list_jailed_dir, read_jailed_file};
 use crate::http_request::{bearer_matches, read_request};
 use crate::native_inference;
 use crate::public_browser::{fetch_public_https, render_document};
+use crate::resident_engine::ResidentEngine;
+use crate::strata_catalog::StrataModelInfo;
 use crate::strata_catalog::discover_models;
 
 const MAX_CONNECTIONS: usize = 16;
@@ -113,6 +115,7 @@ pub struct BridgeContext {
     pub memory: Mutex<Memory45Store>,
     pub lora: Mutex<DynamicLoraAdapter>,
     pub voice: VoicePersona,
+    voice_slot: Mutex<()>,
     bearer_token: Option<String>,
     inference_token: Option<String>,
     local_console: bool,
@@ -120,7 +123,8 @@ pub struct BridgeContext {
     preview_dir: Option<Dir>,
     model_listing: Option<Dir>,
     active_connections: AtomicUsize,
-    inference_slot: Mutex<()>,
+    inference_slot: Mutex<Option<ResidentEngine>>,
+    resident: bool,
     experimental_lora: bool,
     upstream: Option<SocketAddr>,
     upstream_model: Option<String>,
@@ -156,7 +160,7 @@ fn send_error(stream: &mut TcpStream, status: &str, message: &str) {
     send_json(stream, status, &json!({"error": message}).to_string());
 }
 
-const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Resource-Policy: same-origin\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'\r\nPermissions-Policy: camera=(), microphone=(), geolocation=()\r\n";
+const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Resource-Policy: same-origin\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'\r\nPermissions-Policy: camera=(), microphone=(), geolocation=()\r\n";
 
 fn send_json(stream: &mut TcpStream, status: &str, json_body: &str) {
     let resp = format!(
@@ -346,6 +350,31 @@ fn forward_chat(ctx: &BridgeContext, body: &Value) -> Option<String> {
     String::from_utf8(result.stdout).ok()
 }
 
+fn ensure_resident(
+    ctx: &BridgeContext,
+    slot: &mut Option<ResidentEngine>,
+    model: &StrataModelInfo,
+) -> Result<(), native_inference::InferenceError> {
+    if slot
+        .as_mut()
+        .is_some_and(|worker| worker.model == model.path && worker.live())
+    {
+        return Ok(());
+    }
+    // Release the previous model before measuring the budget for its replacement.
+    slot.take();
+    native_inference::admit_model(model.trunk_bytes, read_free_vram())?;
+    let worker = ResidentEngine::start(&ctx.engine_bin, &model.path)?;
+    if worker.exchange("warmup\n".to_owned())?.trim_end() != "ready" {
+        return Err((
+            "503 Service Unavailable",
+            "installed engine does not support resident token requests",
+        ));
+    }
+    *slot = Some(worker);
+    Ok(())
+}
+
 fn read_free_vram() -> Option<u64> {
     let out = Command::new("nvidia-smi")
         .args([
@@ -418,6 +447,29 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
         ("GET", "/console.js") => send_asset(&mut stream, "text/javascript", CONSOLE_JS),
         ("GET", "/theme.js") => send_asset(&mut stream, "text/javascript", THEME_JS),
         ("GET", "/favicon.ico") => send_error(&mut stream, "404 Not Found", "icon unavailable"),
+        ("GET", "/v1/engine/status") => {
+            let mut value = if let Ok(mut slot) = ctx.inference_slot.try_lock() {
+                if let Some(worker) = slot.as_mut()
+                    && worker.live()
+                {
+                    json!({"state":"ready", "pid":worker.pid(), "model":worker.model.file_stem().and_then(|v| v.to_str())})
+                } else {
+                    json!({"state":if ctx.resident { "idle" } else { "on-demand" }})
+                }
+            } else {
+                json!({"state":"busy"})
+            };
+            value["platform"] = json!(std::env::consts::OS);
+            send_json(&mut stream, "200 OK", &value.to_string());
+        }
+        ("POST", "/v1/engine/unload") if ctx.resident => {
+            if let Ok(mut slot) = ctx.inference_slot.try_lock() {
+                slot.take();
+                send_json(&mut stream, "200 OK", r#"{"state":"idle"}"#);
+            } else {
+                send_error(&mut stream, "409 Conflict", "inference is in progress");
+            }
+        }
         ("GET", "/v1/session") => {
             send_json(
                 &mut stream,
@@ -620,8 +672,45 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
         }
         ("POST", "/v1/voice/say") => {
             let text = extract_json_str(&body, "text").unwrap_or_default();
+            if text.trim().is_empty() || text.chars().count() > 800 {
+                send_error(
+                    &mut stream,
+                    "400 Bad Request",
+                    "enter between 1 and 800 characters",
+                );
+                return;
+            }
+            let Ok(_voice) = ctx.voice_slot.try_lock() else {
+                send_error(&mut stream, "409 Conflict", "speech synthesis is busy");
+                return;
+            };
+            if std::fs::create_dir_all(&ctx.state_dir).is_err() {
+                send_error(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    "speech output folder is unavailable",
+                );
+                return;
+            }
             let wav = ctx.state_dir.join("bridge_voice.wav");
             match speak_text(&ctx.voice, &text, Some(&wav)) {
+                Ok(_) if body["playback"].as_bool() == Some(true) => match std::fs::read(&wav) {
+                    Ok(audio)
+                        if audio.starts_with(b"RIFF") && audio.get(8..12) == Some(b"WAVE") =>
+                    {
+                        let _ = write!(
+                            stream,
+                            "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nCache-Control: no-store\r\n{SECURITY_HEADERS}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            audio.len()
+                        );
+                        let _ = stream.write_all(&audio);
+                    }
+                    _ => send_error(
+                        &mut stream,
+                        "500 Internal Server Error",
+                        "speech backend returned no WAV audio",
+                    ),
+                },
                 Ok(msg) => send_json(
                     &mut stream,
                     "200 OK",
@@ -808,7 +897,7 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
         }
         ("POST", "/v1/chat/completions") => {
             let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
-            let Ok(_slot) = ctx.inference_slot.try_lock() else {
+            let Ok(mut slot) = ctx.inference_slot.try_lock() else {
                 send_error(
                     &mut stream,
                     "429 Too Many Requests",
@@ -848,8 +937,20 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                 return;
             };
             let result = native_inference::prompt_and_limit(&body).and_then(|(prompt, max)| {
-                native_inference::admit_model(model.trunk_bytes, read_free_vram())?;
-                native_inference::generate(&ctx.engine_bin, &model, prompt, max)
+                if ctx.resident {
+                    ensure_resident(ctx, &mut slot, &model)?;
+                } else {
+                    native_inference::admit_model(model.trunk_bytes, read_free_vram())?;
+                }
+                let result =
+                    native_inference::generate(&ctx.engine_bin, &model, prompt, max, slot.as_mut());
+                if result
+                    .as_ref()
+                    .is_err_and(|(code, _)| code.starts_with('5'))
+                {
+                    slot.take();
+                }
+                result
             });
             match result {
                 Ok(reply) if streaming => send_sse_completion(&mut stream, model_id, &reply),
@@ -944,6 +1045,7 @@ pub fn run_http_bridge(
         memory: Mutex::new(memory),
         lora: Mutex::new(lora),
         voice: VoicePersona::default(),
+        voice_slot: Mutex::new(()),
         bearer_token,
         inference_token,
         local_console,
@@ -951,7 +1053,8 @@ pub fn run_http_bridge(
         preview_dir,
         model_listing,
         active_connections: AtomicUsize::new(0),
-        inference_slot: Mutex::new(()),
+        inference_slot: Mutex::new(None),
+        resident: env::var("INKLING2_RESIDENT").is_ok_and(|v| v == "1"),
         experimental_lora: env::var("INKLING2_EXPERIMENTAL_LORA").is_ok_and(|v| v == "1"),
         upstream,
         upstream_model: env::var("INKLING2_UPSTREAM_MODEL").ok(),
@@ -971,6 +1074,25 @@ pub fn run_http_bridge(
         fn drop(&mut self) {
             self.0.fetch_sub(1, Ordering::Relaxed);
         }
+    }
+    if ctx.resident
+        && ctx.upstream.is_none()
+        && let Ok(id) = env::var("INKLING2_PRELOAD_MODEL")
+    {
+        let state = Arc::clone(&ctx);
+        thread::spawn(move || {
+            let models = discover_models(&state.models_dir);
+            let mut selected = models
+                .iter()
+                .filter(|m| m.path.file_stem().and_then(|v| v.to_str()) == Some(&id));
+            if let Some(model) = selected.next().filter(|_| selected.next().is_none())
+                && let Ok(mut slot) = state.inference_slot.lock()
+                && slot.is_none()
+                && let Err((_, reason)) = ensure_resident(&state, &mut slot, model)
+            {
+                eprintln!("Model preload: {reason}");
+            }
+        });
     }
     for stream in listener.incoming().flatten() {
         if ctx.active_connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
