@@ -173,6 +173,7 @@
       const r = await api('/v1/models');
       const sel = $('model-select');
       const list = $('models-list');
+      const selected = sel.value;
       if (!r.ok || !Array.isArray(r.data.data) || r.data.data.length === 0) {
         sel.replaceChildren(new Option(r.status === 401 ? 'Unlock to view models' : 'No local .strata found', ''));
         list.textContent = 'No .strata models discovered under INKLING2_MODELS_DIR.';
@@ -192,6 +193,7 @@
         div.innerHTML = `<div><strong>${escapeHtml(m.id)}</strong><div style="font-size:12px;color:var(--text-tertiary);">${escapeHtml(m.owned_by || 'SC117')}</div></div><span class="kv-val">${gib} GiB</span>`;
         list.appendChild(div);
       });
+      if (r.data.data.some(model => model.id === selected)) sel.value = selected;
     }
 
     function escapeHtml(s) {
@@ -235,8 +237,10 @@
     }
 
     let turns = [];
+    let conversationModel = '';
     function newChat() {
       turns = [];
+      conversationModel = $('model-select').value;
       $('chat-scroll').querySelectorAll('.msg').forEach(node => node.remove());
       $('chat-empty').style.removeProperty('display');
       $('chat-status').textContent = '';
@@ -258,6 +262,7 @@
         return;
       }
       if (!textOverride) input.value = '';
+      if (conversationModel !== $('model-select').value) newChat();
       appendMessage('user', text, null, null);
 
       const btn = $('btn-send');
@@ -292,7 +297,7 @@
           appendMessage('assistant', msg.content || '(reasoning only — increase max_tokens)', msg.reasoning_content || null, meta);
           $('chat-status').textContent = `Done in ${dt}s`;
         } else {
-          appendMessage('assistant', 'Error: ' + JSON.stringify(res.data), null, `HTTP ${res.status}`);
+          appendMessage('assistant', res.data.error || 'The request failed.', null, res.data.status || `HTTP ${res.status}`);
           $('chat-status').textContent = 'Request failed';
         }
       } catch (e) {
