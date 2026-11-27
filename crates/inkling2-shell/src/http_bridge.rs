@@ -3,26 +3,37 @@
 //! Designed for Meta Muse.ai VM <-> Inkling2-OS encrypted SSH tunnel (`VM:18080 -> PC:8080`).
 //! Security controls (`SOP-Security`):
 //! - Strictly binds to loopback (`127.0.0.1:<port>` only; refuses non-loopback bind addresses)
-//! - Optional Bearer token auth via `INKLING2_BRIDGE_TOKEN` for all POST endpoints
+//! - Scoped Bearer token auth via `INKLING2_BRIDGE_TOKEN` for all POST endpoints
 //! - Strictly typed, allowlisted endpoints (NO arbitrary shell execution endpoint)
 //! - Bounded request body size (256 KiB max)
 
 use std::env;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
+
+use cap_std::{ambient_authority, fs::Dir};
+use serde_json::{Value, json};
 
 use inkling2_companion::dynamic_lora::{DynamicLoraAdapter, LoraConfig};
-use inkling2_companion::memory45::{MAX_MEMORY_BYTES, Memory45Store};
+use inkling2_companion::memory45::Memory45Store;
 use inkling2_companion::voice_call::{VoicePersona, speak_text};
 
+use crate::hardened_fs::{list_jailed_dir, read_jailed_file};
+use crate::http_request::{bearer_matches, read_request};
+use crate::native_inference;
+use crate::public_browser::fetch_public_https;
 use crate::strata_catalog::discover_models;
 
-const MAX_BODY_BYTES: usize = 256 * 1024;
+const MAX_CONNECTIONS: usize = 16;
 const CONSOLE_HTML: &str = include_str!("../../../ui/index.html");
+const CONSOLE_JS: &str = include_str!("../../../ui/console.js");
+const THEME_JS: &str = include_str!("../../../ui/theme.js");
 
 /// Parsed live GPU telemetry snapshot from `nvidia-smi`.
 #[derive(Debug, Clone, PartialEq)]
@@ -78,7 +89,7 @@ pub fn parse_bench_tc_metrics(output: &str) -> (f64, f64, f64) {
     (bf16, int8, nvfp4)
 }
 
-fn query_live_gpu_telemetry() -> Option<GpuTelemetry> {
+pub fn query_live_gpu_telemetry() -> Option<GpuTelemetry> {
     let out = Command::new("nvidia-smi")
         .args([
             "--query-gpu=name,driver_version,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit,clocks.sm",
@@ -102,7 +113,16 @@ pub struct BridgeContext {
     pub memory: Mutex<Memory45Store>,
     pub lora: Mutex<DynamicLoraAdapter>,
     pub voice: VoicePersona,
-    pub bearer_token: Option<String>,
+    bearer_token: Option<String>,
+    inference_token: Option<String>,
+    preview_dir: Option<Dir>,
+    model_listing: Option<Dir>,
+    active_connections: AtomicUsize,
+    inference_slot: Mutex<()>,
+    experimental_lora: bool,
+    upstream: Option<SocketAddr>,
+    upstream_model: Option<String>,
+    upstream_key: Option<String>,
 }
 
 fn json_escape(s: &str) -> String {
@@ -121,137 +141,285 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-/// Minimal zero-dependency JSON string field extractor (returns the LAST occurrence of `"key":"value"`,
-/// which handles OpenAI `messages: [{role:system,content:...},{role:user,content:...}]` cleanly).
-fn extract_json_str(body: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\"");
-    let pos = body.rfind(&needle)?;
-    let colon = body[pos + needle.len()..].find(':')? + pos + needle.len();
-    let q1 = body[colon + 1..].find('"')? + colon + 1;
-    let bytes = body.as_bytes();
-    let mut i = q1 + 1;
-    let mut out = String::new();
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            match bytes[i + 1] {
-                b'n' => out.push('\n'),
-                b'r' => out.push('\r'),
-                b't' => out.push('\t'),
-                b'"' => out.push('"'),
-                b'\\' => out.push('\\'),
-                other => out.push(other as char),
-            }
-            i += 2;
-            continue;
-        }
-        if bytes[i] == b'"' {
-            return Some(out);
-        }
-        // Handle multi-byte UTF-8 cleanly
-        let s_rest = &body[i..];
-        let ch = s_rest.chars().next()?;
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    None
+fn extract_json_str(body: &Value, key: &str) -> Option<String> {
+    body.get(key)?.as_str().map(str::to_owned)
 }
 
-fn extract_json_f32(body: &str, key: &str) -> Option<f32> {
-    let needle = format!("\"{key}\"");
-    let pos = body.find(&needle)?;
-    let colon = body[pos + needle.len()..].find(':')? + pos + needle.len();
-    let rest = body[colon + 1..].trim_start();
-    let end = rest
-        .find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+' | 'e' | 'E')))
-        .unwrap_or(rest.len());
-    rest[..end].parse::<f32>().ok()
+fn extract_json_f32(body: &Value, key: &str) -> Option<f32> {
+    let value = body.get(key)?.as_f64()? as f32;
+    value.is_finite().then_some(value)
 }
+
+fn send_error(stream: &mut TcpStream, status: &str, message: &str) {
+    send_json(stream, status, &json!({"error": message}).to_string());
+}
+
+const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Resource-Policy: same-origin\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'\r\nPermissions-Policy: camera=(), microphone=(), geolocation=()\r\n";
 
 fn send_json(stream: &mut TcpStream, status: &str, json_body: &str) {
     let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json_body}",
+        "HTTP/1.1 {status}\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\n{SECURITY_HEADERS}Content-Length: {}\r\nConnection: close\r\n\r\n{json_body}",
         json_body.len()
     );
     let _ = stream.write_all(resp.as_bytes());
     let _ = stream.flush();
 }
 
-fn send_html(stream: &mut TcpStream, status: &str, html_body: &str) {
+fn send_asset(stream: &mut TcpStream, mime: &str, html_body: &str) {
     let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html_body}",
+        "HTTP/1.1 200 OK\r\nContent-Type: {mime}; charset=utf-8\r\nCache-Control: no-store\r\n{SECURITY_HEADERS}Content-Length: {}\r\nConnection: close\r\n\r\n{html_body}",
         html_body.len()
     );
     let _ = stream.write_all(resp.as_bytes());
     let _ = stream.flush();
 }
 
-fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
-    let mut reader = match stream.try_clone() {
-        Ok(s) => BufReader::new(s),
-        Err(_) => return,
-    };
+fn send_sse_completion(stream: &mut TcpStream, model: &str, content: &str) {
+    let chunk1 = format!(
+        "data: {{\"id\":\"chatcmpl-inkling2\",\"object\":\"chat.completion.chunk\",\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"{}\"}},\"finish_reason\":null}}]}}\n\n",
+        json_escape(model),
+        json_escape(content)
+    );
+    let chunk2 = format!(
+        "data: {{\"id\":\"chatcmpl-inkling2\",\"object\":\"chat.completion.chunk\",\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"length\"}}]}}\n\n",
+        json_escape(model)
+    );
+    let payload = format!("{chunk1}{chunk2}data: [DONE]\n\n");
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\n{SECURITY_HEADERS}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+    let _ = stream.write_all(resp.as_bytes());
+    let _ = stream.flush();
+}
 
-    let mut req_line = String::new();
-    if reader.read_line(&mut req_line).unwrap_or(0) == 0 {
-        return;
-    }
-    let parts: Vec<&str> = req_line.split_whitespace().collect();
-    if parts.len() < 2 {
-        send_json(&mut stream, "400 Bad Request", r#"{"error":"malformed request line"}"#);
-        return;
-    }
-    let method = parts[0];
-    let path = parts[1].split('?').next().unwrap_or(parts[1]);
+/// Strip `<script>`, `<style>`, and HTML tags to produce safe, non-executable text for the hardened OS browser.
+fn sanitize_html_to_text(raw: &str) -> (String, String) {
+    let lower = raw.to_ascii_lowercase();
+    let title = lower
+        .find("<title")
+        .and_then(|s| lower[s..].find('>').map(|g| s + g + 1))
+        .and_then(|start| {
+            lower[start..]
+                .find("</title>")
+                .map(|end| raw[start..start + end].trim().to_string())
+        })
+        .unwrap_or_else(|| "Untitled Document".to_string());
 
-    let mut content_len: usize = 0;
-    let mut auth_header: Option<String> = None;
-    loop {
-        let mut hline = String::new();
-        if reader.read_line(&mut hline).unwrap_or(0) == 0 {
-            break;
-        }
-        let trimmed = hline.trim();
-        if trimmed.is_empty() {
-            break;
-        }
-        if let Some((k, v)) = trimmed.split_once(':') {
-            let kl = k.trim().to_ascii_lowercase();
-            let val = v.trim();
-            if kl == "content-length" {
-                content_len = val.parse().unwrap_or(0);
-            } else if kl == "authorization" {
-                auth_header = Some(val.to_string());
+    let mut out = String::with_capacity(raw.len().min(32768));
+    let mut in_tag = false;
+    let mut skip_until: Option<&str> = None;
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && out.len() < 32768 {
+        if let Some(close_tag) = skip_until {
+            if lower[i..].starts_with(close_tag) {
+                i += close_tag.len();
+                skip_until = None;
+                continue;
             }
+            i += raw[i..].chars().next().map_or(1, char::len_utf8);
+            continue;
         }
+        if lower[i..].starts_with("<script") {
+            skip_until = Some("</script>");
+            i += 7;
+            continue;
+        }
+        if lower[i..].starts_with("<style") {
+            skip_until = Some("</style>");
+            i += 6;
+            continue;
+        }
+        let ch = raw[i..].chars().next().unwrap_or(' ');
+        if ch == '<' {
+            in_tag = true;
+            if !out.ends_with('\n') && !out.ends_with(' ') {
+                out.push(' ');
+            }
+        } else if ch == '>' {
+            in_tag = false;
+        } else if !in_tag {
+            out.push(ch);
+        }
+        i += ch.len_utf8();
     }
+    let compact: String = out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (title, compact)
+}
 
-    if content_len > MAX_BODY_BYTES {
-        send_json(&mut stream, "413 Payload Too Large", r#"{"error":"body exceeds 256 KiB limit"}"#);
+fn resolve_fs_root<'a>(ctx: &'a BridgeContext, root_id: &str) -> Option<(&'a Dir, bool)> {
+    match root_id {
+        "workspace" => ctx.preview_dir.as_ref().map(|dir| (dir, true)),
+        "models" => ctx.model_listing.as_ref().map(|dir| (dir, false)),
+        _ => None,
+    }
+}
+
+fn usable_token(name: &str) -> Result<Option<String>, String> {
+    match env::var(name) {
+        Err(env::VarError::NotPresent) => Ok(None),
+        Ok(value)
+            if (24..=256).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_graphic()) =>
+        {
+            Ok(Some(value))
+        }
+        _ => Err(format!(
+            "{name} must contain 24–256 printable ASCII characters without spaces"
+        )),
+    }
+}
+
+fn upstream_addr(raw: &str) -> Option<SocketAddr> {
+    let authority = raw
+        .strip_prefix("http://")?
+        .strip_suffix("/v1/chat/completions")?;
+    let addr: SocketAddr = if let Some(port) = authority.strip_prefix("localhost:") {
+        format!("127.0.0.1:{port}").parse().ok()?
+    } else {
+        authority.parse().ok()?
+    };
+    (addr.ip().is_loopback() && addr.port() != 0).then_some(addr)
+}
+
+fn forward_chat(ctx: &BridgeContext, body: &Value) -> Option<String> {
+    use std::process::Stdio;
+    let url = format!("http://{}/v1/chat/completions", ctx.upstream?);
+    let mut request = body.clone();
+    if let Some(model) = &ctx.upstream_model {
+        request["model"] = json!(model);
+    }
+    let escape_config = |value: &str| value.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut config = format!("data-raw = \"{}\"\n", escape_config(&request.to_string()));
+    if let Some(key) = &ctx.upstream_key {
+        config.push_str(&format!(
+            "header = \"Authorization: Bearer {}\"\n",
+            escape_config(key)
+        ));
+    }
+    let mut child = Command::new("curl")
+        .args([
+            "--disable",
+            "--silent",
+            "--fail",
+            "--noproxy",
+            "*",
+            "--proto",
+            "=http",
+            "--connect-timeout",
+            "5",
+            "--max-time",
+            "240",
+            "--max-filesize",
+            "1048576",
+            "--header",
+            "Content-Type: application/json",
+            "--config",
+            "-",
+            "--",
+            &url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env_remove("INKLING2_BRIDGE_TOKEN")
+        .env_remove("INKLING2_INFERENCE_TOKEN")
+        .env_remove("INKLING2_UPSTREAM_API_KEY")
+        .spawn()
+        .ok()?;
+    let written = child
+        .stdin
+        .take()
+        .is_some_and(|mut input| input.write_all(config.as_bytes()).is_ok());
+    let result = child.wait_with_output().ok()?;
+    if !written || !result.status.success() || result.stdout.len() > 1_048_576 {
+        return None;
+    }
+    String::from_utf8(result.stdout).ok()
+}
+
+fn read_free_vram() -> Option<u64> {
+    let out = Command::new("nvidia-smi")
+        .args([
+            "--id=0",
+            "--query-gpu=memory.free",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    std::str::from_utf8(&out.stdout).ok()?.trim().parse().ok()
+}
+
+fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let Ok(addr) = stream.local_addr() else {
+        return;
+    };
+    let Ok(input) = stream.try_clone() else {
+        return;
+    };
+    let req = match read_request(&mut BufReader::new(input), addr) {
+        Ok(req) => req,
+        Err((status, message)) => {
+            send_error(&mut stream, status, message);
+            return;
+        }
+    };
+    let method = req.method.as_str();
+    let path = req.path.as_str();
+    let console_auth = bearer_matches(req.auth.as_deref(), ctx.bearer_token.as_deref());
+    let inference_auth = bearer_matches(req.auth.as_deref(), ctx.inference_token.as_deref());
+    let public = matches!(
+        (method, path),
+        (
+            "GET",
+            "/" | "/index.html" | "/console.js" | "/theme.js" | "/health" | "/favicon.ico"
+        )
+    );
+    let inference = matches!(
+        (method, path),
+        ("GET", "/v1/models") | ("POST", "/v1/chat/completions")
+    );
+    if !(public || console_auth || inference && inference_auth) {
+        send_error(
+            &mut stream,
+            "401 Unauthorized",
+            "console or inference Bearer token required",
+        );
         return;
     }
-
-    let mut body_bytes = vec![0u8; content_len];
-    if content_len > 0 && reader.read_exact(&mut body_bytes).is_err() {
-        send_json(&mut stream, "400 Bad Request", r#"{"error":"incomplete body"}"#);
-        return;
-    }
-    let body = String::from_utf8_lossy(&body_bytes);
-
-    // Enforce Bearer token on POST endpoints if INKLING2_BRIDGE_TOKEN is configured
-    if method == "POST" {
-        if let Some(expected) = &ctx.bearer_token {
-            let expected_hdr = format!("Bearer {expected}");
-            if auth_header.as_deref() != Some(expected_hdr.as_str()) {
-                send_json(&mut stream, "401 Unauthorized", r#"{"error":"missing or invalid Bearer token"}"#);
+    let body: Value = if method == "POST" {
+        match serde_json::from_slice::<Value>(&req.body) {
+            Ok(body) if body.is_object() => body,
+            _ => {
+                send_error(&mut stream, "400 Bad Request", "expected a JSON object");
                 return;
             }
         }
-    }
+    } else {
+        Value::Null
+    };
 
     match (method, path) {
-        ("GET", "/") | ("GET", "/index.html") => {
-            send_html(&mut stream, "200 OK", CONSOLE_HTML);
+        ("GET", "/" | "/index.html") => send_asset(&mut stream, "text/html", CONSOLE_HTML),
+        ("GET", "/console.js") => send_asset(&mut stream, "text/javascript", CONSOLE_JS),
+        ("GET", "/theme.js") => send_asset(&mut stream, "text/javascript", THEME_JS),
+        ("GET", "/favicon.ico") => send_error(&mut stream, "404 Not Found", "icon unavailable"),
+        ("GET", "/v1/session") => {
+            send_json(
+                &mut stream,
+                "200 OK",
+                &json!({"upstream": ctx.upstream.is_some(), "experimental_lora": ctx.experimental_lora}).to_string(),
+            );
         }
         ("GET", "/v1/gpu/info") => {
             if let Some(g) = query_live_gpu_telemetry() {
@@ -269,16 +437,22 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
                 );
                 send_json(&mut stream, "200 OK", &json);
             } else {
-                send_json(&mut stream, "200 OK", r#"{"available":false,"cuda_target":"13.5-sm_120a"}"#);
+                send_json(
+                    &mut stream,
+                    "200 OK",
+                    r#"{"available":false,"cuda_target":"13.5-sm_120a"}"#,
+                );
             }
         }
         ("GET", "/health") => {
-            let m_entries = ctx.memory.lock().map(|m| m.stats().entry_count).unwrap_or(0);
-            let l_steps = ctx.lora.lock().map(|l| l.stats().evolution_steps).unwrap_or(0);
-            let json = format!(
-                r#"{{"status":"ok","service":"inkling2-os-bridge","cuda":"13.5-sm_120a","memory_entries":{m_entries},"memory_budget_bytes":{MAX_MEMORY_BYTES},"lora_steps":{l_steps}}}"#
-            );
-            send_json(&mut stream, "200 OK", &json);
+            let mode = if ctx.bearer_token.is_some() {
+                "locked"
+            } else {
+                "preview"
+            };
+            let health =
+                json!({"status": "ok", "service": "inkling2-os-bridge", "console_mode": mode});
+            send_json(&mut stream, "200 OK", &health.to_string());
         }
         ("GET", "/v1/models") => {
             let models = discover_models(&ctx.models_dir);
@@ -307,14 +481,22 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
                 );
                 send_json(&mut stream, "200 OK", &json);
             } else {
-                send_json(&mut stream, "500 Internal Server Error", r#"{"error":"memory lock poisoned"}"#);
+                send_json(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    r#"{"error":"memory lock poisoned"}"#,
+                );
             }
         }
         ("POST", "/v1/memory/add") => {
             let text = extract_json_str(&body, "text").unwrap_or_default();
             let imp = extract_json_f32(&body, "importance").unwrap_or(0.8);
             if text.is_empty() {
-                send_json(&mut stream, "400 Bad Request", r#"{"error":"missing text field"}"#);
+                send_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    r#"{"error":"missing text field"}"#,
+                );
                 return;
             }
             if let Ok(mut m) = ctx.memory.lock() {
@@ -327,7 +509,11 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
                 );
                 send_json(&mut stream, "200 OK", &json);
             } else {
-                send_json(&mut stream, "500 Internal Server Error", r#"{"error":"memory lock poisoned"}"#);
+                send_json(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    r#"{"error":"memory lock poisoned"}"#,
+                );
             }
         }
         ("POST", "/v1/memory/recall") => {
@@ -349,7 +535,11 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
                 let json = format!(r#"{{"hits":[{}]}}"#, items.join(","));
                 send_json(&mut stream, "200 OK", &json);
             } else {
-                send_json(&mut stream, "500 Internal Server Error", r#"{"error":"memory lock poisoned"}"#);
+                send_json(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    r#"{"error":"memory lock poisoned"}"#,
+                );
             }
         }
         ("GET", "/v1/lora/stats") => {
@@ -361,10 +551,22 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
                 );
                 send_json(&mut stream, "200 OK", &json);
             } else {
-                send_json(&mut stream, "500 Internal Server Error", r#"{"error":"lora lock poisoned"}"#);
+                send_json(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    r#"{"error":"lora lock poisoned"}"#,
+                );
             }
         }
         ("POST", "/v1/lora/reinforce") => {
+            if !ctx.experimental_lora {
+                send_error(
+                    &mut stream,
+                    "403 Forbidden",
+                    "experimental LoRA updates are disabled",
+                );
+                return;
+            }
             let text = extract_json_str(&body, "text").unwrap_or_default();
             let reward = extract_json_f32(&body, "reward").unwrap_or(0.5);
             let emb = Memory45Store::embed_text_q8(&text);
@@ -377,7 +579,9 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
             }
             if let Ok(mut l) = ctx.lora.lock() {
                 l.reinforce_step(&h, &target, reward);
-                let saved = l.save_atomic(&ctx.state_dir.join("dynamic_lora.iklora")).is_ok();
+                let saved = l
+                    .save_atomic(&ctx.state_dir.join("dynamic_lora.iklora"))
+                    .is_ok();
                 let s = l.stats();
                 let json = format!(
                     r#"{{"steps":{},"norm_b":{:.4},"saved":{saved}}}"#,
@@ -385,7 +589,11 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
                 );
                 send_json(&mut stream, "200 OK", &json);
             } else {
-                send_json(&mut stream, "500 Internal Server Error", r#"{"error":"lora lock poisoned"}"#);
+                send_json(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    r#"{"error":"lora lock poisoned"}"#,
+                );
             }
         }
         ("POST", "/v1/lora/rollback") => {
@@ -396,15 +604,27 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
                 }
                 send_json(&mut stream, "200 OK", &format!(r#"{{"rolled_back":{ok}}}"#));
             } else {
-                send_json(&mut stream, "500 Internal Server Error", r#"{"error":"lora lock poisoned"}"#);
+                send_json(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    r#"{"error":"lora lock poisoned"}"#,
+                );
             }
         }
         ("POST", "/v1/voice/say") => {
             let text = extract_json_str(&body, "text").unwrap_or_default();
             let wav = ctx.state_dir.join("bridge_voice.wav");
             match speak_text(&ctx.voice, &text, Some(&wav)) {
-                Ok(msg) => send_json(&mut stream, "200 OK", &format!(r#"{{"status":"ok","detail":"{}"}}"#, json_escape(&msg))),
-                Err(e) => send_json(&mut stream, "500 Internal Server Error", &format!(r#"{{"error":"{}"}}"#, json_escape(&e))),
+                Ok(msg) => send_json(
+                    &mut stream,
+                    "200 OK",
+                    &format!(r#"{{"status":"ok","detail":"{}"}}"#, json_escape(&msg)),
+                ),
+                Err(e) => send_json(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    &format!(r#"{{"error":"{}"}}"#, json_escape(&e)),
+                ),
             }
         }
         ("POST", "/v1/gpu/bench-tc") => {
@@ -418,7 +638,11 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
                         format!("{stderr_log}\n{stdout_log}")
                     };
                     let (bf16, int8, nvfp4) = parse_bench_tc_metrics(&combined);
-                    let line = combined.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("ok");
+                    let line = combined
+                        .lines()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("ok");
                     send_json(
                         &mut stream,
                         "200 OK",
@@ -433,134 +657,179 @@ fn handle_client(mut stream: TcpStream, ctx: Arc<BridgeContext>) {
                         ),
                     );
                 }
-                Err(e) => send_json(&mut stream, "500 Internal Server Error", &format!(r#"{{"error":"{}"}}"#, json_escape(&e.to_string()))),
+                Err(e) => send_json(
+                    &mut stream,
+                    "500 Internal Server Error",
+                    &format!(r#"{{"error":"{}"}}"#, json_escape(&e.to_string())),
+                ),
+            }
+        }
+        ("POST", "/v1/net/fetch") => {
+            let url = extract_json_str(&body, "url").unwrap_or_default();
+            match fetch_public_https(&url) {
+                Ok(bytes) => {
+                    let (title, text) = sanitize_html_to_text(&String::from_utf8_lossy(&bytes));
+                    let result = json!({"url": url, "tls": "1.2+", "bytes": bytes.len(), "title": title, "text": text});
+                    send_json(&mut stream, "200 OK", &result.to_string());
+                }
+                Err((blocked, error)) => send_error(
+                    &mut stream,
+                    if blocked {
+                        "403 Forbidden"
+                    } else {
+                        "502 Bad Gateway"
+                    },
+                    error,
+                ),
+            }
+        }
+        ("POST", "/v1/fs/list") => {
+            let root_id =
+                extract_json_str(&body, "root").unwrap_or_else(|| "workspace".to_string());
+            let rel = extract_json_str(&body, "path").unwrap_or_default();
+            let Some((root_path, previews)) = resolve_fs_root(ctx, &root_id) else {
+                send_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    r#"{"error":"requested directory was not shared"}"#,
+                );
+                return;
+            };
+            match list_jailed_dir(root_path, &rel, previews) {
+                Ok(entries) => {
+                    let items: Vec<String> = entries
+                        .iter()
+                        .map(|e| {
+                            format!(
+                                r#"{{"name":"{}","is_dir":{},"size":{},"blocked":{}}}"#,
+                                json_escape(&e.name),
+                                e.is_dir,
+                                e.size,
+                                e.blocked
+                            )
+                        })
+                        .collect();
+                    let json = format!(
+                        r#"{{"root":"{}","path":"{}","entries":[{}]}}"#,
+                        json_escape(&root_id),
+                        json_escape(&rel),
+                        items.join(",")
+                    );
+                    send_json(&mut stream, "200 OK", &json);
+                }
+                Err(e) => {
+                    send_json(
+                        &mut stream,
+                        "403 Forbidden",
+                        &format!(r#"{{"error":"{}"}}"#, json_escape(e)),
+                    );
+                }
+            }
+        }
+        ("POST", "/v1/fs/read") => {
+            let root_id =
+                extract_json_str(&body, "root").unwrap_or_else(|| "workspace".to_string());
+            let rel = extract_json_str(&body, "path").unwrap_or_default();
+            let Some((root_path, previews)) = resolve_fs_root(ctx, &root_id) else {
+                send_json(
+                    &mut stream,
+                    "400 Bad Request",
+                    r#"{"error":"unknown root"}"#,
+                );
+                return;
+            };
+            if !previews {
+                send_error(
+                    &mut stream,
+                    "403 Forbidden",
+                    "this root allows listing only",
+                );
+                return;
+            }
+            match read_jailed_file(root_path, &rel) {
+                Ok(r) => {
+                    let json = format!(
+                        r#"{{"root":"{}","path":"{}","size":{},"truncated":{},"fnv64":"{}","content":"{}"}}"#,
+                        json_escape(&root_id),
+                        json_escape(&r.rel_path),
+                        r.size,
+                        r.truncated,
+                        r.fnv64_hex,
+                        json_escape(&r.content)
+                    );
+                    send_json(&mut stream, "200 OK", &json);
+                }
+                Err(e) => {
+                    send_json(
+                        &mut stream,
+                        "403 Forbidden",
+                        &format!(r#"{{"error":"{}"}}"#, json_escape(e)),
+                    );
+                }
             }
         }
         ("POST", "/v1/chat/completions") => {
-            let user_msg = extract_json_str(&body, "content").unwrap_or_else(|| "ping".to_string());
-            let recalled = ctx
-                .memory
-                .lock()
-                .ok()
-                .map(|mut m| {
-                    let hits = m.recall(&user_msg, 3);
-                    m.insert(format!("user: {user_msg}"), 0.75);
-                    let _ = m.save_atomic(&ctx.state_dir.join("memory45.ikm"));
-                    hits.into_iter().map(|h| h.text).collect::<Vec<_>>().join(" | ")
-                })
-                .unwrap_or_default();
-
-            // Plan A: Forward to loopback-only upstream OpenAI-compatible inference server (Strata / llama-server)
-            // if INKLING2_UPSTREAM_OPENAI is configured (strictly loopback 127.0.0.1 only per SOP-Security).
-            let upstream = env::var("INKLING2_UPSTREAM_OPENAI").ok().filter(|u| {
-                u.starts_with("http://127.0.0.1:") || u.starts_with("http://localhost:")
-            });
-            if let Some(up_url) = upstream {
-                let up_model = env::var("INKLING2_UPSTREAM_MODEL").unwrap_or_else(|_| "Inkling-2-Mini".to_string());
-                let up_key = env::var("INKLING2_UPSTREAM_API_KEY").ok().filter(|k| !k.is_empty());
-                let req_max_tok = extract_json_f32(&body, "max_tokens")
-                    .map(|v| (v as u32).clamp(32, 4096))
-                    .unwrap_or(1024);
-                let req_effort = extract_json_str(&body, "reasoning_effort").unwrap_or_else(|| "none".to_string());
-                let effort_num = match req_effort.as_str() {
-                    "none" => "0.0",
-                    "minimal" => "0.1",
-                    "low" => "0.2",
-                    "medium" => "0.7",
-                    _ => "0.9",
-                };
-                let injected_body = if recalled.is_empty() {
-                    format!(
-                        r#"{{"model":"{}","messages":[{{"role":"user","content":"{}"}}],"max_tokens":{},"reasoning_effort":"{}","chat_template_kwargs":{{"reasoning_effort":{}}}}}"#,
-                        json_escape(&up_model),
-                        json_escape(&user_msg),
-                        req_max_tok,
-                        json_escape(&req_effort),
-                        effort_num
-                    )
-                } else {
-                    format!(
-                        r#"{{"model":"{}","messages":[{{"role":"system","content":"[Memory45 Context] {}"}},{{"role":"user","content":"{}"}}],"max_tokens":{},"reasoning_effort":"{}","chat_template_kwargs":{{"reasoning_effort":{}}}}}"#,
-                        json_escape(&up_model),
-                        json_escape(&recalled),
-                        json_escape(&user_msg),
-                        req_max_tok,
-                        json_escape(&req_effort),
-                        effort_num
-                    )
-                };
-                let mut curl_cmd = Command::new("curl");
-                curl_cmd
-                    .args([
-                        "-sS", "-f", "-X", "POST",
-                        "-H", "Content-Type: application/json",
-                    ])
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped());
-                if let Some(ref key) = up_key {
-                    curl_cmd.args(["-H", &format!("Authorization: Bearer {key}")]);
-                }
-                // Pass JSON payload via stdin (`@-`) so raw UTF-8 Japanese prompts are never mangled
-                // by Windows ACP/cp932 command-line encoding.
-                curl_cmd.args([
-                    "--connect-timeout", "5",
-                    "--max-time", "240",
-                    "--data-binary", "@-",
-                    &up_url,
-                ]);
-                if let Ok(mut child) = curl_cmd.spawn() {
-                    if let Some(mut stdin) = child.stdin.take() {
-                        let _ = stdin.write_all(injected_body.as_bytes());
-                    }
-                    if let Ok(o) = child.wait_with_output() {
-                        if o.status.success() && !o.stdout.is_empty() {
-                            let up_json = String::from_utf8_lossy(&o.stdout);
-                            send_json(&mut stream, "200 OK", &up_json);
-                            return;
-                        }
-                        let err_msg = String::from_utf8_lossy(&o.stderr);
-                        let _ = writeln!(
-                            std::io::stderr(),
-                            "[Inkling2-Bridge] upstream {up_url} failed (status={}): {}",
-                            o.status,
-                            err_msg.trim()
-                        );
-                    }
-                }
-            }
-
-            // Plan B: Invoke native CUDA 13.5 sm_120a inkling2-engine.exe `generate` on local SC117 .strata
-            let lora_steps = ctx.lora.lock().map(|l| l.stats().evolution_steps).unwrap_or(0);
-            let native_out = discover_models(&ctx.models_dir)
-                .into_iter()
-                .next()
-                .and_then(|m| {
-                    Command::new(&ctx.engine_bin)
-                        .args(["generate", &m.path.to_string_lossy(), &user_msg, "8"])
-                        .output()
-                        .ok()
-                })
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|s| !s.is_empty());
-
-            let reply = if let Some(gen_text) = native_out {
-                gen_text
-            } else {
-                format!(
-                    "[Inkling2-OS Bridge | CUDA 13.5 sm_120a | LoRA step={lora_steps}] 記憶参照: {}",
-                    if recalled.is_empty() { "なし" } else { &recalled }
-                )
+            let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+            let Ok(_slot) = ctx.inference_slot.try_lock() else {
+                send_error(
+                    &mut stream,
+                    "429 Too Many Requests",
+                    "one inference request is already active",
+                );
+                return;
             };
-            let json = format!(
-                r#"{{"id":"chatcmpl-inkling2","object":"chat.completion","model":"Inkling-2-Mini-SQ-10-abliterated","choices":[{{"index":0,"message":{{"role":"assistant","content":"{}"}},"finish_reason":"stop"}}]}}"#,
-                json_escape(&reply)
-            );
-            send_json(&mut stream, "200 OK", &json);
+            // The Strata credential always routes to the dedicated native engine.
+            if console_auth && !inference_auth && ctx.upstream.is_some() {
+                if let Some(reply) = forward_chat(ctx, &body) {
+                    let mime = if streaming {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    };
+                    send_asset(&mut stream, mime, &reply);
+                } else {
+                    send_error(
+                        &mut stream,
+                        "502 Bad Gateway",
+                        "configured upstream unavailable",
+                    );
+                }
+                return;
+            }
+            let model_id = body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mut models = discover_models(&ctx.models_dir)
+                .into_iter()
+                .filter(|model| {
+                    model.path.file_stem().and_then(|name| name.to_str()) == Some(model_id)
+                });
+            let Some(model) = models.next().filter(|_| models.next().is_none()) else {
+                send_error(&mut stream, "404 Not Found", "model absent or ambiguous");
+                return;
+            };
+            let result = native_inference::prompt_and_limit(&body).and_then(|(prompt, max)| {
+                native_inference::admit_model(model.file_bytes, read_free_vram())?;
+                native_inference::generate(&ctx.engine_bin, &model, &prompt, max)
+            });
+            match result {
+                Ok(reply) if streaming => send_sse_completion(&mut stream, model_id, &reply),
+                Ok(reply) => send_json(&mut stream, "200 OK", &json!({
+                    "id": "chatcmpl-inkling2",
+                    "object": "chat.completion",
+                    "model": model_id,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": reply}, "finish_reason": "length"}]
+                }).to_string()),
+                Err((status, message)) => send_error(&mut stream, status, message),
+            }
         }
         _ => {
-            send_json(&mut stream, "404 Not Found", r#"{"error":"endpoint not found"}"#);
+            send_json(
+                &mut stream,
+                "404 Not Found",
+                r#"{"error":"endpoint not found"}"#,
+            );
         }
     }
 }
@@ -584,7 +853,36 @@ pub fn run_http_bridge(
     let memory = Memory45Store::load(&state_dir.join("memory45.ikm")).unwrap_or_default();
     let lora = DynamicLoraAdapter::load(&state_dir.join("dynamic_lora.iklora"))
         .unwrap_or_else(|_| DynamicLoraAdapter::new(LoraConfig::default()));
-    let bearer_token = env::var("INKLING2_BRIDGE_TOKEN").ok().filter(|t| !t.is_empty());
+    let bearer_token = usable_token("INKLING2_BRIDGE_TOKEN")?;
+    let inference_token = usable_token("INKLING2_INFERENCE_TOKEN")?;
+    if bearer_token.is_some() && bearer_token == inference_token {
+        return Err("console and inference tokens must be distinct".into());
+    }
+    let upstream = match env::var("INKLING2_UPSTREAM_OPENAI") {
+        Ok(raw) => Some(
+            upstream_addr(&raw)
+                .filter(|up| *up != addr)
+                .ok_or("upstream must be a different loopback socket with /v1/chat/completions")?,
+        ),
+        Err(env::VarError::NotPresent) => None,
+        Err(_) => return Err("invalid upstream address".into()),
+    };
+    let upstream_key = env::var("INKLING2_UPSTREAM_API_KEY")
+        .ok()
+        .filter(|key| !key.is_empty());
+    if upstream_key
+        .as_ref()
+        .is_some_and(|key| !key.bytes().all(|b| b.is_ascii_graphic()))
+    {
+        return Err("upstream API key contains invalid characters".into());
+    }
+    let preview_dir = env::var_os("INKLING2_PREVIEW_DIR")
+        .map(|p| {
+            Dir::open_ambient_dir(p, ambient_authority())
+                .map_err(|_| "preview directory unavailable")
+        })
+        .transpose()?;
+    let model_listing = Dir::open_ambient_dir(&models_dir, ambient_authority()).ok();
 
     let ctx = Arc::new(BridgeContext {
         engine_bin,
@@ -594,6 +892,15 @@ pub fn run_http_bridge(
         lora: Mutex::new(lora),
         voice: VoicePersona::default(),
         bearer_token,
+        inference_token,
+        preview_dir,
+        model_listing,
+        active_connections: AtomicUsize::new(0),
+        inference_slot: Mutex::new(()),
+        experimental_lora: env::var("INKLING2_EXPERIMENTAL_LORA").is_ok_and(|v| v == "1"),
+        upstream,
+        upstream_model: env::var("INKLING2_UPSTREAM_MODEL").ok(),
+        upstream_key,
     });
 
     let listener = TcpListener::bind(addr).map_err(|e| format!("bind {addr} failed: {e}"))?;
@@ -604,11 +911,22 @@ pub fn run_http_bridge(
     );
     drop(stderr);
 
-    for incoming in listener.incoming() {
-        if let Ok(stream) = incoming {
-            let c = Arc::clone(&ctx);
-            thread::spawn(move || handle_client(stream, c));
+    struct Active<'a>(&'a AtomicUsize);
+    impl Drop for Active<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::Relaxed);
         }
+    }
+    for stream in listener.incoming().flatten() {
+        if ctx.active_connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+            continue;
+        }
+        ctx.active_connections.fetch_add(1, Ordering::Relaxed);
+        let c = Arc::clone(&ctx);
+        thread::spawn(move || {
+            let _active = Active(&c.active_connections);
+            handle_client(stream, &c);
+        });
     }
     Ok(())
 }

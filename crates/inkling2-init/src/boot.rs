@@ -46,27 +46,55 @@ pub struct MountSpec {
 
 /// Core kernel filesystems mounted by Inkling2-OS PID 1.
 pub const EARLY_MOUNTS: &[MountSpec] = &[
-    MountSpec { source: "proc",      target: "/proc",          fstype: "proc",      options: "nosuid,noexec,nodev" },
-    MountSpec { source: "sysfs",     target: "/sys",           fstype: "sysfs",     options: "nosuid,noexec,nodev" },
-    MountSpec { source: "devtmpfs",  target: "/dev",           fstype: "devtmpfs",  options: "mode=0755,nosuid" },
-    MountSpec { source: "devpts",    target: "/dev/pts",       fstype: "devpts",    options: "gid=5,mode=0620" },
-    MountSpec { source: "tmpfs",     target: "/run",           fstype: "tmpfs",     options: "mode=0755,nosuid,nodev" },
-    MountSpec { source: "tmpfs",     target: "/dev/shm",       fstype: "tmpfs",     options: "mode=1777,nosuid,nodev" },
-    MountSpec { source: "hugetlbfs", target: "/dev/hugepages", fstype: "hugetlbfs", options: "pagesize=2M" },
+    MountSpec {
+        source: "proc",
+        target: "/proc",
+        fstype: "proc",
+        options: "nosuid,noexec,nodev",
+    },
+    MountSpec {
+        source: "sysfs",
+        target: "/sys",
+        fstype: "sysfs",
+        options: "nosuid,noexec,nodev",
+    },
+    MountSpec {
+        source: "devtmpfs",
+        target: "/dev",
+        fstype: "devtmpfs",
+        options: "mode=0755,nosuid",
+    },
+    MountSpec {
+        source: "devpts",
+        target: "/dev/pts",
+        fstype: "devpts",
+        options: "gid=5,mode=0620",
+    },
+    MountSpec {
+        source: "tmpfs",
+        target: "/run",
+        fstype: "tmpfs",
+        options: "mode=0755,nosuid,nodev",
+    },
+    MountSpec {
+        source: "tmpfs",
+        target: "/dev/shm",
+        fstype: "tmpfs",
+        options: "mode=1777,nosuid,nodev",
+    },
+    MountSpec {
+        source: "hugetlbfs",
+        target: "/dev/hugepages",
+        fstype: "hugetlbfs",
+        options: "pagesize=2M",
+    },
 ];
 
 /// Required kernel modules for RTX 5060 Ti (Blackwell sm_120a) + NVMe direct streaming.
-pub const KERNEL_MODULES: &[&str] = &[
-    "nvme",
-    "nvidia",
-    "nvidia_uvm",
-    "nvidia_modeset",
-];
+pub const KERNEL_MODULES: &[&str] = &["nvme", "nvidia", "nvidia_uvm", "nvidia_modeset"];
 
 /// Sysctl tunables applied by PID 1 for deterministic low-latency inference on 32 GiB RAM + 6C/12T Ryzen.
 pub const SYSCTL_TUNABLES: &[(&str, &str)] = &[
-    // Reserve 8192 x 2 MiB = 16 GiB HugePages for Pinned RAM expert tier (SQ-20 fits VRAM + HugePages!)
-    ("/proc/sys/vm/nr_hugepages", "8192"),
     // Disable aggressive swapping so pinned inference slabs never page out
     ("/proc/sys/vm/swappiness", "1"),
     // Prevent transparent hugepage compaction latency spikes during token decode
@@ -105,6 +133,14 @@ pub fn run_early_boot(mode: BootMode) -> Result<BootReport, BootError> {
     let mut mounts_applied = 0usize;
     for m in EARLY_MOUNTS {
         if mode == BootMode::LiveLinuxPid1 {
+            // initramfs normally moved these mounts to the final root already.
+            if fs::read_to_string("/proc/self/mountinfo").is_ok_and(|mounts| {
+                mounts
+                    .lines()
+                    .any(|line| line.split_whitespace().nth(4) == Some(m.target))
+            }) {
+                continue;
+            }
             let _ = fs::create_dir_all(m.target);
             let status = Command::new("/bin/mount")
                 .args(["-t", m.fstype, "-o", m.options, m.source, m.target])
@@ -114,10 +150,21 @@ pub fn run_early_boot(mode: BootMode) -> Result<BootReport, BootError> {
                     detail: format!("failed to spawn mount for {}: {e}", m.target),
                 })?;
             if !status.success() {
-                os_warn!("PID1", "mount {} returned non-zero (may already be mounted)", m.target);
+                os_warn!(
+                    "PID1",
+                    "mount {} returned non-zero (may already be mounted)",
+                    m.target
+                );
             }
         } else {
-            os_info!("PID1", "[sim] mount -t {} -o {} {} {}", m.fstype, m.options, m.source, m.target);
+            os_info!(
+                "PID1",
+                "[sim] mount -t {} -o {} {} {}",
+                m.fstype,
+                m.options,
+                m.source,
+                m.target
+            );
         }
         mounts_applied += 1;
     }
@@ -162,6 +209,13 @@ pub fn run_early_boot(mode: BootMode) -> Result<BootReport, BootError> {
         mounts_applied,
         modules_loaded,
         sysctls_applied,
-        hugepages_2m: 8192,
+        hugepages_2m: if mode == BootMode::DryRunSimulation {
+            8192
+        } else {
+            fs::read_to_string("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages")
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+                .unwrap_or(0)
+        },
     })
 }

@@ -1,53 +1,62 @@
-# Lightweight, Reproducible Inkling2-OS Bootable UEFI/BIOS ISO Builder
-# Uses ubuntu:24.04 (~30MB base) to avoid 12GB CUDA devel image extraction OOM on 32GB hosts,
-# installs Rust 2024 + liburing + uv/hakua-memory + GRUB2 UEFI/BIOS + Linux kernel + squashfs.
+# syntax=docker/dockerfile:1
+ARG RUST_IMAGE=rust:1.94.1-bookworm@sha256:6ae102bdbf528294bc79ad6e1fae682f6f7c2a6e6621506ba959f9685b308a55
+ARG UBUNTU_IMAGE=ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
 
-FROM ubuntu:24.04 AS builder
-
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake ninja-build curl ca-certificates git pkg-config \
-    liburing-dev libzstd-dev libssl-dev \
-    iproute2 dhcpcd-base wpasupplicant iw nftables chrony openssh-client \
-    ffmpeg alsa-utils v4l-utils python3 python3-venv \
-    grub-common grub-pc-bin grub-efi-amd64-bin xorriso mtools squashfs-tools \
-    linux-image-generic initramfs-tools \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv + hakua-memory==0.3.5 into Inkling2-OS Python runtime
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && /root/.local/bin/uv venv /opt/inkling2-venv \
-    && /root/.local/bin/uv pip install --python /opt/inkling2-venv/bin/python hakua-memory
-
-# Install Rust 2024 toolchain
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-WORKDIR /src/inkling2-os
-COPY . /src/inkling2-os
-
-# 1. Run Linux Rust 2024 test suite + build release stripped binaries (PID 1 & AI-Native Shell)
-RUN cargo test --workspace \
-    && cargo build --release --workspace \
+FROM ${RUST_IMAGE} AS rust-build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY ui/ ui/
+COPY python/ python/
+RUN cargo test --locked --workspace -j 2 && cargo build --locked --release --workspace -j 2 \
     && strip target/release/inkling2-init target/release/inkling2-shell
 
-# 2. Verify hakua-memory inside Linux venv
-RUN /opt/inkling2-venv/bin/python python/hakua_bridge.py --probe
+FROM ${UBUNTU_IMAGE} AS appliance
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl iproute2 kmod nftables mount util-linux \
+    dhcpcd-base wpasupplicant chrony \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=rust-build /src/target/release/inkling2-init /sbin/inkling2-init
+COPY --from=rust-build /src/target/release/inkling2-shell /usr/bin/inkling2-shell
+COPY os-image/net/nftables.conf /etc/inkling2/nftables.conf
+RUN groupadd --gid 61000 inkling2 && useradd --uid 61000 --gid 61000 \
+    --no-create-home --shell /usr/sbin/nologin inkling2 \
+    && mkdir -p /models /dev/pts /dev/shm /dev/hugepages \
+    && ldd /sbin/inkling2-init && ldd /usr/bin/inkling2-shell
 
-# 3. Assemble minimal bootable rootfs (PID 1, AI Shell, hakua-memory, nftables, TLS certs) + UEFI/BIOS ISO
-RUN mkdir -p /out /iso/boot/grub /rootfs/sbin /rootfs/usr/bin /rootfs/usr/lib/inkling2 /rootfs/opt \
-    /rootfs/etc/inkling2 /rootfs/etc/ssl/certs /rootfs/models /rootfs/proc /rootfs/sys /rootfs/dev /rootfs/run \
-    && cp target/release/inkling2-init /rootfs/sbin/inkling2-init \
-    && cp target/release/inkling2-shell /rootfs/usr/bin/inkling2-shell \
-    && cp python/hakua_bridge.py /rootfs/usr/lib/inkling2/hakua_bridge.py \
-    && cp -a /opt/inkling2-venv /rootfs/opt/inkling2-venv \
-    && cp os-image/net/nftables.conf /rootfs/etc/inkling2/nftables.conf \
-    && cp /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt \
-    && cp os-image/grub/grub.cfg /iso/boot/grub/grub.cfg \
-    && cp /boot/vmlinuz-* /iso/boot/vmlinuz \
-    && cp /boot/initrd.img-* /iso/boot/initramfs.img \
-    && mksquashfs /rootfs /iso/boot/inkling2-rootfs.squashfs -comp zstd -Xcompression-level 12 \
-    && grub-mkrescue -o /out/inkling2-os-x86_64-sm120.iso /iso
+FROM ${UBUNTU_IMAGE} AS image
+ENV DEBIAN_FRONTEND=noninteractive
+ARG KERNEL_PACKAGE=linux-image-6.8.0-151-generic
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    casper initramfs-tools "$KERNEL_PACKAGE" \
+    grub-common grub-pc-bin grub-efi-amd64-bin xorriso mtools squashfs-tools \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=appliance / /rootfs/
+COPY os-image/grub/grub.cfg /iso/boot/grub/grub.cfg
+RUN set -eu; mkdir -p /out /iso/casper; \
+    kernel=$(find /boot -maxdepth 1 -type f -name 'vmlinuz-*' | sort -V | tail -1); \
+    test -n "$kernel"; version=$(basename "$kernel" | cut -c9-); \
+    printf 'RESUME=none\n' > /etc/initramfs-tools/conf.d/inkling2-resume; \
+    rm -f "/boot/initrd.img-$version"; \
+    update-initramfs -c -k "$version"; \
+    lsinitramfs "/boot/initrd.img-$version" | awk '$0=="scripts/casper" {found=1} END {exit !found}'; \
+    cp "$kernel" /iso/boot/vmlinuz; \
+    cp "/boot/initrd.img-$version" /iso/boot/initramfs.img; \
+    mkdir -p /rootfs/lib/modules; cp -a "/lib/modules/$version" /rootfs/lib/modules/; \
+    mksquashfs /rootfs /iso/casper/filesystem.squashfs -comp zstd -noappend -processors 2; \
+    grub-mkrescue -o /out/inkling2-os-v0.1.1-x86_64-sm120.iso /iso; \
+    xorriso -indev /out/inkling2-os-v0.1.1-x86_64-sm120.iso -report_el_torito plain; \
+    dpkg-query --admindir=/rootfs/var/lib/dpkg -W -f='${Package}\t${Version}\n' > /out/linux-rootfs-packages.tsv; \
+    dpkg-query -W -f='${Package}\t${Version}\n' "$KERNEL_PACKAGE" "linux-modules-$version" >> /out/linux-rootfs-packages.tsv
+
+FROM ${UBUNTU_IMAGE} AS verification
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ovmf qemu-system-x86 python3 && rm -rf /var/lib/apt/lists/*
+COPY --from=image /out/ /out/
+COPY os-image/verify-boot.py /usr/local/bin/verify-boot
+ENTRYPOINT ["python3", "/usr/local/bin/verify-boot"]
 
 FROM scratch AS artifact
-COPY --from=builder /out/inkling2-os-x86_64-sm120.iso /inkling2-os-x86_64-sm120.iso
+COPY --from=image /out/ /

@@ -29,52 +29,96 @@ impl Default for VoicePersona {
 }
 
 /// Speak `text` aloud (or synthesize to WAV) using VOICEVOX if online, else OS female voice fallback.
-pub fn speak_text(persona: &VoicePersona, text: &str, out_wav: Option<&Path>) -> Result<String, String> {
+pub fn speak_text(
+    persona: &VoicePersona,
+    text: &str,
+    out_wav: Option<&Path>,
+) -> Result<String, String> {
     if text.trim().is_empty() {
         return Ok("empty text skipped".to_string());
     }
 
     // 1. Probe local VOICEVOX loopback server
     let probe = Command::new("curl")
-        .args(["-sS", "--connect-timeout", "1", "--max-time", "2", &format!("{}/version", persona.voicevox_url)])
+        .args([
+            "--disable",
+            "--noproxy",
+            "*",
+            "-sS",
+            "--connect-timeout",
+            "1",
+            "--max-time",
+            "2",
+            &format!("{}/version", persona.voicevox_url),
+        ])
         .output();
 
-    if let Ok(o) = probe {
-        if o.status.success() {
-            let q_url = format!("{}/audio_query?speaker={}", persona.voicevox_url, persona.voicevox_speaker_id);
-            let q = Command::new("curl")
-                .args(["-sS", "-X", "POST", "--get", "--data-urlencode", &format!("text={text}"), &q_url])
-                .output()
-                .map_err(|e| format!("voicevox audio_query failed: {e}"))?;
-            if q.status.success() {
-                let s_url = format!("{}/synthesis?speaker={}", persona.voicevox_url, persona.voicevox_speaker_id);
-                let target_wav = out_wav
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::env::temp_dir().join("inkling2_voice.wav"));
-                let synth = Command::new("curl")
-                    .args([
-                        "-sS", "-X", "POST",
-                        "-H", "Content-Type: application/json",
-                        "--data-binary", "@-",
-                        "-o", &target_wav.to_string_lossy(),
-                        &s_url,
-                    ])
-                    .stdin(std::process::Stdio::piped())
-                    .spawn();
-                if let Ok(mut child) = synth {
-                    if let Some(mut stdin) = child.stdin.take() {
-                        use std::io::Write;
-                        let _ = stdin.write_all(&q.stdout);
-                    }
-                    if let Ok(st) = child.wait() {
-                        if st.success() {
-                            return Ok(format!(
-                                "VOICEVOX speaker={} synthesized -> {}",
-                                persona.voicevox_speaker_id,
-                                target_wav.display()
-                            ));
-                        }
-                    }
+    if let Ok(o) = probe
+        && o.status.success()
+    {
+        let q_url = format!(
+            "{}/audio_query?speaker={}",
+            persona.voicevox_url, persona.voicevox_speaker_id
+        );
+        let q = Command::new("curl")
+            .args([
+                "--disable",
+                "--noproxy",
+                "*",
+                "-sS",
+                "-X",
+                "POST",
+                "--max-time",
+                "10",
+                "--get",
+                "--data-urlencode",
+                &format!("text={text}"),
+                &q_url,
+            ])
+            .output()
+            .map_err(|e| format!("voicevox audio_query failed: {e}"))?;
+        if q.status.success() {
+            let s_url = format!(
+                "{}/synthesis?speaker={}",
+                persona.voicevox_url, persona.voicevox_speaker_id
+            );
+            let target_wav = out_wav
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::env::temp_dir().join("inkling2_voice.wav"));
+            let synth = Command::new("curl")
+                .args([
+                    "--disable",
+                    "--noproxy",
+                    "*",
+                    "-sS",
+                    "--fail",
+                    "--max-time",
+                    "15",
+                    "-X",
+                    "POST",
+                    "-H",
+                    "Content-Type: application/json",
+                    "--data-binary",
+                    "@-",
+                    "-o",
+                    &target_wav.to_string_lossy(),
+                    &s_url,
+                ])
+                .stdin(std::process::Stdio::piped())
+                .spawn();
+            if let Ok(mut child) = synth {
+                if let Some(mut stdin) = child.stdin.take() {
+                    use std::io::Write;
+                    let _ = stdin.write_all(&q.stdout);
+                }
+                if let Ok(st) = child.wait()
+                    && st.success()
+                {
+                    return Ok(format!(
+                        "VOICEVOX speaker={} synthesized -> {}",
+                        persona.voicevox_speaker_id,
+                        target_wav.display()
+                    ));
                 }
             }
         }
@@ -82,25 +126,25 @@ pub fn speak_text(persona: &VoicePersona, text: &str, out_wav: Option<&Path>) ->
 
     // 2. Fallback: Windows SAPI Japanese Female Voice (Microsoft Haruka Desktop)
     if cfg!(target_os = "windows") {
-        let safe_text = text.replace('\'', " ").replace('"', " ");
-        let script = if let Some(wav) = out_wav {
-            format!(
-                "Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; \
-                 $v=$s.GetInstalledVoices() | Where-Object {{ $_.VoiceInfo.Name -match 'Haruka|Ayumi|Zira|Female' }} | Select-Object -First 1; \
-                 if ($v) {{ $s.SelectVoice($v.VoiceInfo.Name) }}; $s.Rate=1; $s.SetOutputToWaveFile('{}'); $s.Speak('{}'); $s.Dispose()",
-                wav.display(),
-                safe_text
-            )
-        } else {
-            format!(
-                "Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; \
-                 $v=$s.GetInstalledVoices() | Where-Object {{ $_.VoiceInfo.Name -match 'Haruka|Ayumi|Zira|Female' }} | Select-Object -First 1; \
-                 if ($v) {{ $s.SelectVoice($v.VoiceInfo.Name) }}; $s.Rate=1; $s.Speak('{}'); $s.Dispose()",
-                safe_text
-            )
-        };
-        let st = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
+        // Pass user text and the destination as data, independent of PowerShell parsing.
+        let script = r#"Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+try {
+  $v = $s.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Name -match 'Haruka|Ayumi|Zira|Female' } | Select-Object -First 1
+  if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }
+  if ($env:INKLING2_TTS_WAV) { $s.SetOutputToWaveFile($env:INKLING2_TTS_WAV) }
+  $s.Rate = 1
+  $s.Speak($env:INKLING2_TTS_TEXT)
+} finally { $s.Dispose() }"#;
+        let mut command = Command::new("powershell");
+        command
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("INKLING2_TTS_TEXT", text)
+            .env_remove("INKLING2_TTS_WAV");
+        if let Some(wav) = out_wav {
+            command.env("INKLING2_TTS_WAV", wav);
+        }
+        let st = command
             .status()
             .map_err(|e| format!("SAPI fallback failed: {e}"))?;
         if st.success() {
@@ -109,5 +153,5 @@ pub fn speak_text(persona: &VoicePersona, text: &str, out_wav: Option<&Path>) ->
         return Err(format!("SAPI exited with {st}"));
     }
 
-    Ok("Linux TTS ready (connect VOICEVOX or piper-tts on Inkling2-OS)".to_string())
+    Err("no Linux TTS engine is available".to_string())
 }

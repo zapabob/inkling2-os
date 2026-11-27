@@ -24,7 +24,10 @@ pub struct StrataModelInfo {
 
 /// Inspect a single `.strata` v1.1 binary header (first 64 bytes).
 pub fn inspect_strata_header(path: &Path) -> Result<StrataModelInfo, String> {
-    let meta = fs::metadata(path).map_err(|e| format!("stat {}: {e}", path.display()))?;
+    let meta = fs::symlink_metadata(path).map_err(|e| format!("stat {}: {e}", path.display()))?;
+    if !meta.is_file() || meta.len() < 4096 || is_reparse_point(&meta) {
+        return Err("model must be a regular local file with a complete header".into());
+    }
     let mut f = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
     let mut hdr = [0u8; 64];
     f.read_exact(&mut hdr)
@@ -42,6 +45,15 @@ pub fn inspect_strata_header(path: &Path) -> Result<StrataModelInfo, String> {
     let manifest_bytes = u64::from_le_bytes([
         hdr[24], hdr[25], hdr[26], hdr[27], hdr[28], hdr[29], hdr[30], hdr[31],
     ]);
+    if !(4..=32).contains(&section_count)
+        || manifest_offset < 4096
+        || !(1..=64 * 1024 * 1024).contains(&manifest_bytes)
+        || manifest_offset
+            .checked_add(manifest_bytes)
+            .is_none_or(|end| end > meta.len())
+    {
+        return Err("model manifest is outside the accepted header bounds".into());
+    }
 
     Ok(StrataModelInfo {
         path: path.to_path_buf(),
@@ -53,30 +65,48 @@ pub fn inspect_strata_header(path: &Path) -> Result<StrataModelInfo, String> {
     })
 }
 
+fn is_reparse_point(meta: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    meta.file_type().is_symlink()
+}
+
 /// Discover all valid `.strata` v1.1 files inside `root` (depth <= 2).
 pub fn discover_models(root: &Path) -> Vec<StrataModelInfo> {
     let mut found = Vec::new();
     let Ok(entries) = fs::read_dir(root) else {
         return found;
     };
-    for entry in entries.flatten() {
+    for entry in entries.take(1024).flatten() {
         let p = entry.path();
-        if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("strata") {
+        let Ok(meta) = fs::symlink_metadata(&p) else {
+            continue;
+        };
+        if is_reparse_point(&meta) {
+            continue;
+        }
+        if meta.is_file() && p.extension().and_then(|e| e.to_str()) == Some("strata") {
             if let Ok(info) = inspect_strata_header(&p) {
                 found.push(info);
             }
-        } else if p.is_dir() {
-            if let Ok(sub) = fs::read_dir(&p) {
-                for se in sub.flatten() {
-                    let sp = se.path();
-                    if sp.is_file() && sp.extension().and_then(|e| e.to_str()) == Some("strata") {
-                        if let Ok(info) = inspect_strata_header(&sp) {
-                            found.push(info);
-                        }
-                    }
+        } else if meta.is_dir()
+            && let Ok(sub) = fs::read_dir(&p)
+        {
+            for entry in sub.take(1024).flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("strata")
+                    && let Ok(info) = inspect_strata_header(&path)
+                {
+                    found.push(info);
                 }
             }
         }
     }
+    found.sort_by(|a, b| a.path.cmp(&b.path));
     found
 }

@@ -8,9 +8,13 @@
 //! - Cute girl voice TTS (`voice_call`) + 40x40-patch webcam pipeline (`camera_call`)
 //! - TLS 1.2+ SSRF-guarded internet & Hugging Face Hub client (`net_client`)
 
+mod hardened_fs;
 mod http_bridge;
+mod http_request;
 mod muse_ssh;
+mod native_inference;
 mod net_client;
+mod public_browser;
 mod strata_catalog;
 
 use std::env;
@@ -22,7 +26,10 @@ use inkling2_companion::camera_call::{CameraConfig, capture_webcam_frame};
 use inkling2_companion::dynamic_lora::{DynamicLoraAdapter, LoraConfig};
 use inkling2_companion::memory45::{MAX_MEMORY_BYTES, Memory45Store};
 use inkling2_companion::voice_call::{VoicePersona, speak_text};
-use muse_ssh::{cmd_muse_import, cmd_muse_inbox_ready, cmd_muse_keygen, cmd_muse_ping, cmd_muse_sync, cmd_muse_tunnel};
+use muse_ssh::{
+    cmd_muse_import, cmd_muse_inbox_ready, cmd_muse_keygen, cmd_muse_ping, cmd_muse_sync,
+    cmd_muse_tunnel,
+};
 use net_client::{cmd_hf_pull, cmd_net_fetch, cmd_net_status};
 use strata_catalog::{discover_models, inspect_strata_header};
 
@@ -61,7 +68,11 @@ impl ShellConfig {
                     PathBuf::from("/var/lib/inkling2")
                 }
             });
-        Self { engine_bin, models_dir, state_dir }
+        Self {
+            engine_bin,
+            models_dir,
+            state_dir,
+        }
     }
 
     fn memory_path(&self) -> PathBuf {
@@ -99,7 +110,12 @@ fn write_line(out: &mut impl Write, text: &str) {
     let _ = out.flush();
 }
 
-fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut impl Write) -> bool {
+fn handle_command(
+    cfg: &ShellConfig,
+    st: &mut ShellState,
+    line: &str,
+    out: &mut impl Write,
+) -> bool {
     let parts: Vec<&str> = line.split_whitespace().collect();
     let Some(cmd) = parts.first().copied() else {
         return true;
@@ -108,18 +124,45 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
     match cmd {
         "help" => {
             write_line(out, "Inkling2-OS Commands:");
-            write_line(out, "  models                        Scan models directory for SC117 .strata v1.1 builds");
-            write_line(out, "  inspect <file.strata>         Inspect .strata v1.1 binary header");
-            write_line(out, "  bench-tc                      Run CUDA 13.5 sm_120a Tensor Core benchmark");
-            write_line(out, "  bench <file> [tokens]         Run 48-logical-layer looped MoE decode benchmark");
+            write_line(
+                out,
+                "  models                        Scan models directory for SC117 .strata v1.1 builds",
+            );
+            write_line(
+                out,
+                "  inspect <file.strata>         Inspect .strata v1.1 binary header",
+            );
+            write_line(
+                out,
+                "  bench-tc                      Run CUDA 13.5 sm_120a Tensor Core benchmark",
+            );
+            write_line(
+                out,
+                "  bench <file> [tokens]         Run 48-logical-layer looped MoE decode benchmark",
+            );
             write_line(out, "  mem stats | add <imp> <txt> | recall <query>");
             write_line(out, "  lora stats | reinforce <r> <txt> | rollback");
-            write_line(out, "  voice say <text>              Speak with cute girl voice (VOICEVOX / Haruka)");
-            write_line(out, "  cam snap [out.jpg]            Capture 40x40-patch-aligned webcam frame");
+            write_line(
+                out,
+                "  voice say <text>              Speak with cute girl voice (VOICEVOX / Haruka)",
+            );
+            write_line(
+                out,
+                "  cam snap [out.jpg]            Capture 40x40-patch-aligned webcam frame",
+            );
             write_line(out, "  net status | fetch <url> | hf-pull <repo> <file>");
-            write_line(out, "  muse keygen | ping <user@host> [port] | tunnel <user@host> <rport> <lport> | sync <user@host> <rdir>");
-            write_line(out, "  sysinfo                       Show OS runtime and paths");
-            write_line(out, "  exit | poweroff               Save state and exit AI-OS shell");
+            write_line(
+                out,
+                "  muse keygen | ping <user@host> [port] | tunnel <user@host> <rport> <lport> | sync <user@host> <rdir>",
+            );
+            write_line(
+                out,
+                "  sysinfo                       Show OS runtime and paths",
+            );
+            write_line(
+                out,
+                "  exit | poweroff               Save state and exit AI-OS shell",
+            );
         }
         "muse" => match parts.get(1).copied() {
             Some("keygen") => cmd_muse_keygen(&cfg.state_dir, out),
@@ -169,7 +212,9 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
                 let text = parts[3..].join(" ");
                 let id = st.memory.insert(text, imp);
                 match st.memory.save_atomic(&cfg.memory_path()) {
-                    Ok(()) => write_line(out, &format!("Memory45 stored id={id} (budget<=45 MiB OK)")),
+                    Ok(()) => {
+                        write_line(out, &format!("Memory45 stored id={id} (budget<=45 MiB OK)"))
+                    }
                     Err(e) => write_line(out, &format!("Memory45 save error: {e}")),
                 }
             }
@@ -182,12 +227,18 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
                     for h in hits {
                         write_line(
                             out,
-                            &format!("  [id={} imp={:.2} str={:.1}] {}", h.id, h.importance, h.strength, h.text),
+                            &format!(
+                                "  [id={} imp={:.2} str={:.1}] {}",
+                                h.id, h.importance, h.strength, h.text
+                            ),
                         );
                     }
                 }
             }
-            _ => write_line(out, "usage: mem <stats | add <0.0..1.0> <text> | recall <query>>"),
+            _ => write_line(
+                out,
+                "usage: mem <stats | add <0.0..1.0> <text> | recall <query>>",
+            ),
         },
         "lora" => match parts.get(1).copied() {
             Some("stats") => {
@@ -232,7 +283,10 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
                     write_line(out, "DynamicLoRA: no previous snapshot available.");
                 }
             }
-            _ => write_line(out, "usage: lora <stats | reinforce <-1..1> <text> | rollback>"),
+            _ => write_line(
+                out,
+                "usage: lora <stats | reinforce <-1..1> <text> | rollback>",
+            ),
         },
         "voice" => match parts.get(1).copied() {
             Some("say") if parts.len() >= 3 => {
@@ -276,10 +330,16 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
                     write_line(out, "usage: net hf-pull <owner/repo> <filename.strata>");
                 }
             }
-            _ => write_line(out, "usage: net <status | fetch <url> | hf-pull <repo> <file>>"),
+            _ => write_line(
+                out,
+                "usage: net <status | fetch <url> | hf-pull <repo> <file>>",
+            ),
         },
         "sysinfo" => {
-            write_line(out, &format!("OS Target   : Inkling2-OS v0.1.0 ({})", env::consts::OS));
+            write_line(
+                out,
+                &format!("OS Target   : Inkling2-OS v0.1.0 ({})", env::consts::OS),
+            );
             write_line(out, &format!("Engine Bin  : {}", cfg.engine_bin.display()));
             write_line(out, &format!("Models Root : {}", cfg.models_dir.display()));
             write_line(out, &format!("State Root  : {}", cfg.state_dir.display()));
@@ -287,7 +347,13 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
         "models" => {
             let models = discover_models(&cfg.models_dir);
             if models.is_empty() {
-                write_line(out, &format!("No .strata v1.1 models found under {}", cfg.models_dir.display()));
+                write_line(
+                    out,
+                    &format!(
+                        "No .strata v1.1 models found under {}",
+                        cfg.models_dir.display()
+                    ),
+                );
             } else {
                 for m in models {
                     let gib = (m.file_bytes as f64) / (1024.0 * 1024.0 * 1024.0);
@@ -314,7 +380,11 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
                     out,
                     &format!(
                         "STRATA v1.{} | sections={} | size={} bytes | manifest_off={} ({} bytes)",
-                        m.format_version, m.section_count, m.file_bytes, m.manifest_offset, m.manifest_bytes
+                        m.format_version,
+                        m.section_count,
+                        m.file_bytes,
+                        m.manifest_offset,
+                        m.manifest_bytes
                     ),
                 ),
                 Err(e) => write_line(out, &format!("error: {e}")),
@@ -324,7 +394,10 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
             let status = Command::new(&cfg.engine_bin).arg("bench-tc").status();
             match status {
                 Ok(s) => write_line(out, &format!("bench-tc exited with {s}")),
-                Err(e) => write_line(out, &format!("failed to launch {}: {e}", cfg.engine_bin.display())),
+                Err(e) => write_line(
+                    out,
+                    &format!("failed to launch {}: {e}", cfg.engine_bin.display()),
+                ),
             }
         }
         "bench" => {
@@ -338,7 +411,10 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
                 .status();
             match status {
                 Ok(s) => write_line(out, &format!("bench exited with {s}")),
-                Err(e) => write_line(out, &format!("failed to launch {}: {e}", cfg.engine_bin.display())),
+                Err(e) => write_line(
+                    out,
+                    &format!("failed to launch {}: {e}", cfg.engine_bin.display()),
+                ),
             }
         }
         "exit" | "quit" | "poweroff" => {
@@ -348,7 +424,10 @@ fn handle_command(cfg: &ShellConfig, st: &mut ShellState, line: &str, out: &mut 
             return false;
         }
         _ => {
-            write_line(out, &format!("Unknown command '{cmd}'. Type 'help' for available commands."));
+            write_line(
+                out,
+                &format!("Unknown command '{cmd}'. Type 'help' for available commands."),
+            );
         }
     }
     true
@@ -394,27 +473,42 @@ fn parse_launch_args(args: &[String]) -> (String, bool) {
 
 fn cmd_cli_status(port: u16, out: &mut impl Write) {
     let health_url = format!("http://127.0.0.1:{port}/health");
-    let gpu_url = format!("http://127.0.0.1:{port}/v1/gpu/info");
-    write_line(out, &format!("Inkling2-OS Strata Status (http://127.0.0.1:{port})"));
+    write_line(
+        out,
+        &format!("Inkling2-OS status (http://127.0.0.1:{port})"),
+    );
     match Command::new("curl")
-        .args(["-sS", "--connect-timeout", "2", "--max-time", "5", &health_url])
+        .args([
+            "--disable",
+            "--silent",
+            "--fail",
+            "--noproxy",
+            "*",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "5",
+            "--",
+            &health_url,
+        ])
         .output()
     {
-        Ok(o) if o.status.success() => {
-            write_line(out, &format!("  Bridge : {}", String::from_utf8_lossy(&o.stdout).trim()));
+        Ok(result) if result.status.success() => {
+            write_line(
+                out,
+                &format!("Bridge: {}", String::from_utf8_lossy(&result.stdout).trim()),
+            );
         }
-        _ => {
-            write_line(out, "  Bridge : OFFLINE (start with: inkling2-shell launch --port 8080 --open)");
-            return;
-        }
+        _ => write_line(out, "Bridge: offline"),
     }
-    if let Ok(o) = Command::new("curl")
-        .args(["-sS", "--connect-timeout", "2", "--max-time", "5", &gpu_url])
-        .output()
-    {
-        if o.status.success() {
-            write_line(out, &format!("  GPU    : {}", String::from_utf8_lossy(&o.stdout).trim()));
-        }
+    if let Some(gpu) = http_bridge::query_live_gpu_telemetry() {
+        write_line(
+            out,
+            &format!(
+                "GPU: {} · {} / {} MiB",
+                gpu.name, gpu.memory_used_mib, gpu.memory_total_mib
+            ),
+        );
     }
 }
 
@@ -458,23 +552,26 @@ fn main() -> ExitCode {
             }
             "status" => {
                 let mut port: u16 = 8080;
-                if let Some(pos) = args.iter().position(|a| a == "--port" || a == "-p") {
-                    if let Some(v) = args.get(pos + 1).and_then(|s| s.parse::<u16>().ok()) {
-                        port = v;
-                    }
+                if let Some(pos) = args.iter().position(|a| a == "--port" || a == "-p")
+                    && let Some(v) = args.get(pos + 1).and_then(|s| s.parse::<u16>().ok())
+                {
+                    port = v;
                 }
                 cmd_cli_status(port, &mut stdout);
                 return ExitCode::SUCCESS;
             }
             "ui" => {
                 let mut port: u16 = 8080;
-                if let Some(pos) = args.iter().position(|a| a == "--port" || a == "-p") {
-                    if let Some(v) = args.get(pos + 1).and_then(|s| s.parse::<u16>().ok()) {
-                        port = v;
-                    }
+                if let Some(pos) = args.iter().position(|a| a == "--port" || a == "-p")
+                    && let Some(v) = args.get(pos + 1).and_then(|s| s.parse::<u16>().ok())
+                {
+                    port = v;
                 }
                 let url = format!("http://127.0.0.1:{port}/");
-                write_line(&mut stdout, &format!("Opening Inkling2-OS macOS Console: {url}"));
+                write_line(
+                    &mut stdout,
+                    &format!("Opening Inkling2-OS macOS Console: {url}"),
+                );
                 open_browser(&url);
                 return ExitCode::SUCCESS;
             }
@@ -484,12 +581,30 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "-h" | "--help" | "help" => {
-                write_line(&mut stdout, "Inkling2-OS Strata-Aligned CLI (CUDA 13.5 sm_120a)");
-                write_line(&mut stdout, "  inkling2-shell launch [--port 8080] [--open]  Start loopback server + macOS Web GUI");
-                write_line(&mut stdout, "  inkling2-shell status [--port 8080]           Check live bridge & RTX 5060 Ti telemetry");
-                write_line(&mut stdout, "  inkling2-shell ui [--port 8080]               Open macOS Web GUI in default browser");
-                write_line(&mut stdout, "  inkling2-shell serve [127.0.0.1:8080]         Run loopback HTTP/OpenAI bridge");
-                write_line(&mut stdout, "  inkling2-shell models | bench-tc | bench | inspect | sysinfo | mem | lora | voice | net | muse");
+                write_line(
+                    &mut stdout,
+                    "Inkling2-OS Strata-Aligned CLI (CUDA 13.5 sm_120a)",
+                );
+                write_line(
+                    &mut stdout,
+                    "  inkling2-shell launch [--port 8080] [--open]  Start loopback server + macOS Web GUI",
+                );
+                write_line(
+                    &mut stdout,
+                    "  inkling2-shell status [--port 8080]           Check live bridge & RTX 5060 Ti telemetry",
+                );
+                write_line(
+                    &mut stdout,
+                    "  inkling2-shell ui [--port 8080]               Open macOS Web GUI in default browser",
+                );
+                write_line(
+                    &mut stdout,
+                    "  inkling2-shell serve [127.0.0.1:8080]         Run loopback HTTP/OpenAI bridge",
+                );
+                write_line(
+                    &mut stdout,
+                    "  inkling2-shell models | bench-tc | bench | inspect | sysinfo | mem | lora | voice | net | muse",
+                );
                 return ExitCode::SUCCESS;
             }
             // Direct Strata-style top-level execution for all shell subcommands
@@ -503,7 +618,10 @@ fn main() -> ExitCode {
         }
     }
 
-    write_line(&mut stdout, "Inkling2-OS AI-Native Shell v0.1.0 (CUDA 13.5 sm_120a + Memory45 + DynamicLoRA)");
+    write_line(
+        &mut stdout,
+        "Inkling2-OS AI-Native Shell v0.1.0 (CUDA 13.5 sm_120a + Memory45 + DynamicLoRA)",
+    );
     write_line(&mut stdout, "Type 'help' for commands.");
 
     let stdin = io::stdin();
@@ -535,9 +653,24 @@ mod tests {
         let mut st = ShellState::load_or_new(&cfg);
         let mut buf: Vec<u8> = Vec::new();
         assert!(handle_command(&cfg, &mut st, "help", &mut buf));
-        assert!(handle_command(&cfg, &mut st, "mem add 0.9 Inkling2-OSテスト記憶", &mut buf));
-        assert!(handle_command(&cfg, &mut st, "mem recall Inkling2-OS", &mut buf));
-        assert!(handle_command(&cfg, &mut st, "lora reinforce 0.8 音声対話フィードバック", &mut buf));
+        assert!(handle_command(
+            &cfg,
+            &mut st,
+            "mem add 0.9 Inkling2-OSテスト記憶",
+            &mut buf
+        ));
+        assert!(handle_command(
+            &cfg,
+            &mut st,
+            "mem recall Inkling2-OS",
+            &mut buf
+        ));
+        assert!(handle_command(
+            &cfg,
+            &mut st,
+            "lora reinforce 0.8 音声対話フィードバック",
+            &mut buf
+        ));
         assert!(handle_command(&cfg, &mut st, "lora stats", &mut buf));
         let text = String::from_utf8_lossy(&buf);
         assert!(text.contains("Memory45 stored"));
@@ -546,15 +679,18 @@ mod tests {
 
     #[test]
     fn net_security_guards_block_http_ssrf_and_traversal() {
-        assert!(net_client::validate_https_url("https://huggingface.co/SC117").is_ok());
-        assert!(net_client::validate_https_url("http://huggingface.co").is_err());
-        assert!(net_client::validate_https_url("https://127.0.0.1/secret").is_err());
-        assert!(net_client::validate_https_url("https://169.254.169.254/latest/meta-data/").is_err());
-        assert!(net_client::validate_https_url("https://192.168.1.1/admin").is_err());
-        assert!(net_client::build_hf_resolve_url(
-            "SC117/Inkling-2-Mini-abliterated-Strata",
-            "Inkling-2-Mini-SQ-20-abliterated.strata"
-        ).is_ok());
+        assert!(public_browser::host_for_url("https://huggingface.co/SC117").is_ok());
+        assert!(public_browser::host_for_url("http://huggingface.co").is_err());
+        assert!(public_browser::host_for_url("https://127.0.0.1/secret").is_err());
+        assert!(public_browser::host_for_url("https://169.254.169.254/latest/meta-data/").is_err());
+        assert!(public_browser::host_for_url("https://192.168.1.1/admin").is_err());
+        assert!(
+            net_client::build_hf_resolve_url(
+                "SC117/Inkling-2-Mini-abliterated-Strata",
+                "Inkling-2-Mini-SQ-20-abliterated.strata"
+            )
+            .is_ok()
+        );
         assert!(net_client::build_hf_resolve_url("SC117/repo", "../etc/passwd").is_err());
     }
 
@@ -573,7 +709,10 @@ mod tests {
             "8090".to_string(),
             "--open".to_string(),
         ];
-        assert_eq!(parse_launch_args(&args), ("127.0.0.1:8090".to_string(), true));
+        assert_eq!(
+            parse_launch_args(&args),
+            ("127.0.0.1:8090".to_string(), true)
+        );
 
         let csv = "NVIDIA GeForce RTX 5060 Ti, 621.24, 6500, 16311, 42, 54, 88.50, 180.00, 2610";
         let gpu = http_bridge::parse_nvidia_smi_csv(csv);

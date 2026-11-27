@@ -47,14 +47,20 @@ pub struct TierBudgetPlan {
 }
 
 /// Compute the WDDM-free Linux VRAM + HugePage RAM budget plan for a `.strata` model.
-pub fn compute_tier_plan(policy: GpuPolicy, model_size_mib: u64, hugepages_2m: u32) -> TierBudgetPlan {
-    let usable_vram_mib = policy.total_vram_mib.saturating_sub(policy.driver_kv_reserve_mib);
+pub fn compute_tier_plan(
+    policy: GpuPolicy,
+    model_size_mib: u64,
+    hugepages_2m: u32,
+) -> TierBudgetPlan {
+    let usable_vram_mib = policy
+        .total_vram_mib
+        .saturating_sub(policy.driver_kv_reserve_mib);
     let hugepage_ram_mib = u64::from(hugepages_2m) * 2;
-    let pct = if model_size_mib == 0 {
-        100
-    } else {
-        ((usable_vram_mib.saturating_mul(100)) / model_size_mib).min(100) as u8
-    };
+    let pct = usable_vram_mib
+        .saturating_mul(100)
+        .checked_div(model_size_mib)
+        .unwrap_or(100)
+        .min(100) as u8;
     TierBudgetPlan {
         usable_vram_mib,
         hugepage_ram_mib,
@@ -71,14 +77,25 @@ pub fn apply_gpu_policy(policy: GpuPolicy, mode: BootMode) {
         os_info!(
             "GpuGuard",
             "[sim] nvidia-smi -i {dev} -pm 1 && -c EXCLUSIVE_PROCESS && -pl {pl}W (usable_vram={} MiB)",
-            policy.total_vram_mib.saturating_sub(policy.driver_kv_reserve_mib)
+            policy
+                .total_vram_mib
+                .saturating_sub(policy.driver_kv_reserve_mib)
         );
         return;
     }
 
     let commands: &[&[&str]] = &[
         &["-i", &dev, "-pm", "1"],
-        &["-i", &dev, "-c", if policy.exclusive_compute { "EXCLUSIVE_PROCESS" } else { "DEFAULT" }],
+        &[
+            "-i",
+            &dev,
+            "-c",
+            if policy.exclusive_compute {
+                "EXCLUSIVE_PROCESS"
+            } else {
+                "DEFAULT"
+            },
+        ],
         &["-i", &dev, "-pl", &pl],
     ];
 

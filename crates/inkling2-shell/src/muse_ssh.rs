@@ -20,11 +20,13 @@ pub fn validate_ssh_target(target: &str) -> Result<(), String> {
     if target.starts_with('-') {
         return Err("SSH target must not start with '-'".to_string());
     }
-    let valid = target.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | ':')
-    });
+    let valid = target
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | ':'));
     if !valid {
-        return Err(format!("SSH target '{target}' contains forbidden characters"));
+        return Err(format!(
+            "SSH target '{target}' contains forbidden characters"
+        ));
     }
     Ok(())
 }
@@ -37,19 +39,23 @@ pub fn muse_key_path(state_dir: &Path) -> PathBuf {
 /// Generate an Ed25519 keypair for Muse.ai VM authorization and output ONLY the public key.
 pub fn cmd_muse_keygen(state_dir: &Path, out: &mut impl Write) {
     let key_path = muse_key_path(state_dir);
-    if let Some(parent) = key_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            let _ = writeln!(out, "muse keygen failed (mkdir): {e}");
-            return;
-        }
+    if let Some(parent) = key_path.parent()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        let _ = writeln!(out, "muse keygen failed (mkdir): {e}");
+        return;
     }
     if !key_path.exists() {
         let st = Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519",
-                "-N", "",
-                "-C", "inkling2-os@muse-bridge",
-                "-f", &key_path.to_string_lossy(),
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                "inkling2-os@muse-bridge",
+                "-f",
+                &key_path.to_string_lossy(),
             ])
             .output();
         match st {
@@ -57,7 +63,11 @@ pub fn cmd_muse_keygen(state_dir: &Path, out: &mut impl Write) {
                 let _ = writeln!(out, "Generated Ed25519 keypair at {}", key_path.display());
             }
             Ok(o) => {
-                let _ = writeln!(out, "ssh-keygen failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+                let _ = writeln!(
+                    out,
+                    "ssh-keygen failed: {}",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
                 return;
             }
             Err(e) => {
@@ -69,7 +79,10 @@ pub fn cmd_muse_keygen(state_dir: &Path, out: &mut impl Write) {
     let pub_path = key_path.with_extension("pub");
     match fs::read_to_string(&pub_path) {
         Ok(pk) => {
-            let _ = writeln!(out, "Public key (add to Muse.ai VM ~/.ssh/authorized_keys):");
+            let _ = writeln!(
+                out,
+                "Public key (add to Muse.ai VM ~/.ssh/authorized_keys):"
+            );
             let _ = writeln!(out, "  {}", pk.trim());
         }
         Err(e) => {
@@ -117,10 +130,18 @@ pub fn cmd_muse_ping(state_dir: &Path, target: &str, port: u16, out: &mut impl W
 
     match Command::new("ssh").args(&args).output() {
         Ok(o) if o.status.success() => {
-            let _ = writeln!(out, "Muse.ai SSH OK ({target}:{port}): {}", String::from_utf8_lossy(&o.stdout).trim());
+            let _ = writeln!(
+                out,
+                "Muse.ai SSH OK ({target}:{port}): {}",
+                String::from_utf8_lossy(&o.stdout).trim()
+            );
         }
         Ok(o) => {
-            let _ = writeln!(out, "Muse.ai SSH failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+            let _ = writeln!(
+                out,
+                "Muse.ai SSH failed: {}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            );
         }
         Err(e) => {
             let _ = writeln!(out, "ssh binary unavailable: {e}");
@@ -171,10 +192,24 @@ pub fn cmd_muse_inbox_ready(state_dir: &Path, out: &mut impl Write) {
         return;
     }
     let _ = writeln!(out, "VM-Initiated Muse.ai Inbox Ready: {}", inbox.display());
-    let _ = writeln!(out, "  1) From Muse.ai VM -> PC pull  : scp <pc>:{}/memory45.ikm ~/inkling2-state/", state_dir.display());
-    let _ = writeln!(out, "  2) From Muse.ai VM -> PC push  : scp ~/inkling2-state/memory45.ikm <pc>:{}/", inbox.display());
-    let _ = writeln!(out, "  3) From Muse.ai VM -> PC tunnel: ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 <pc>");
-    let _ = writeln!(out, "  4) On PC validate & activate   : inkling2-shell -c \"muse import\"");
+    let _ = writeln!(
+        out,
+        "  1) From Muse.ai VM -> PC pull  : scp <pc>:{}/memory45.ikm ~/inkling2-state/",
+        state_dir.display()
+    );
+    let _ = writeln!(
+        out,
+        "  2) From Muse.ai VM -> PC push  : scp ~/inkling2-state/memory45.ikm <pc>:{}/",
+        inbox.display()
+    );
+    let _ = writeln!(
+        out,
+        "  3) From Muse.ai VM -> PC tunnel: ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 <pc>"
+    );
+    let _ = writeln!(
+        out,
+        "  4) On PC validate & activate   : inkling2-shell -c \"muse import\""
+    );
 }
 
 /// Validate magic & 45 MiB budget on files pushed by Muse.ai VM into `state/muse-inbox/`, then atomically activate.
@@ -188,11 +223,19 @@ pub fn cmd_muse_import(state_dir: &Path, out: &mut impl Write) {
             Ok(bytes) if bytes.len() as u64 <= max_mem_bytes && bytes.starts_with(b"IKMEM45\0") => {
                 let dst = state_dir.join("memory45.ikm");
                 if fs::rename(&mem_in, &dst).is_ok() {
-                    let _ = writeln!(out, "Imported validated memory45.ikm ({} bytes <= 45 MiB)", bytes.len());
+                    let _ = writeln!(
+                        out,
+                        "Imported validated memory45.ikm ({} bytes <= 45 MiB)",
+                        bytes.len()
+                    );
                 }
             }
             Ok(bytes) => {
-                let _ = writeln!(out, "Rejected inbox memory45.ikm (invalid magic or >45 MiB: {} bytes)", bytes.len());
+                let _ = writeln!(
+                    out,
+                    "Rejected inbox memory45.ikm (invalid magic or >45 MiB: {} bytes)",
+                    bytes.len()
+                );
             }
             Err(e) => {
                 let _ = writeln!(out, "Failed reading inbox memory45.ikm: {e}");
@@ -208,11 +251,19 @@ pub fn cmd_muse_import(state_dir: &Path, out: &mut impl Write) {
             Ok(bytes) if bytes.starts_with(b"IKLORA1\0") => {
                 let dst = state_dir.join("dynamic_lora.iklora");
                 if fs::rename(&lora_in, &dst).is_ok() {
-                    let _ = writeln!(out, "Imported validated dynamic_lora.iklora ({} bytes)", bytes.len());
+                    let _ = writeln!(
+                        out,
+                        "Imported validated dynamic_lora.iklora ({} bytes)",
+                        bytes.len()
+                    );
                 }
             }
             Ok(bytes) => {
-                let _ = writeln!(out, "Rejected inbox dynamic_lora.iklora (invalid IKLORA1 magic, {} bytes)", bytes.len());
+                let _ = writeln!(
+                    out,
+                    "Rejected inbox dynamic_lora.iklora (invalid IKLORA1 magic, {} bytes)",
+                    bytes.len()
+                );
             }
             Err(e) => {
                 let _ = writeln!(out, "Failed reading inbox dynamic_lora.iklora: {e}");

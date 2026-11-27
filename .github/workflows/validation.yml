@@ -1,0 +1,35 @@
+name: Validate Inkling2-OS
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the validation toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal --component rustfmt --component clippy
+      - run: cargo +1.94.1 fmt --all -- --check
+      - run: cargo +1.94.1 clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo +1.94.1 test --locked --workspace
+      - run: cargo +1.94.1 build --locked --release --workspace
+
+  boot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the boot-validation image
+        run: docker build --file os-image/Dockerfile.iso-builder --target verification --tag inkling2-boot-check .
+      - name: Check BIOS and UEFI on the candidate ISO
+        run: docker run --rm --network none --cpus 2 inkling2-boot-check

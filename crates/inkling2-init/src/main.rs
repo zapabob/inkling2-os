@@ -10,9 +10,11 @@ mod boot;
 mod gpu_guard;
 mod logger;
 mod net;
+#[cfg(target_os = "linux")]
+mod supervisor;
 
 use std::env;
-use std::process::{Command, ExitCode};
+use std::process::{self, ExitCode};
 
 use boot::{BootMode, run_early_boot};
 use gpu_guard::{GpuPolicy, apply_gpu_policy, compute_tier_plan};
@@ -20,15 +22,26 @@ use net::{NetPolicy, init_network};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
-    let dry_run = args.iter().any(|a| a == "--dry-run" || a == "--simulate") || cfg!(not(target_os = "linux"));
+    let dry_run = args.iter().any(|a| a == "--dry-run" || a == "--simulate")
+        || cfg!(not(target_os = "linux"));
 
+    if !dry_run && process::id() != 1 {
+        os_error!(
+            "PID1",
+            "Live boot requires Linux PID 1; use --dry-run to inspect the boot plan"
+        );
+        return ExitCode::FAILURE;
+    }
     let mode = if dry_run {
         BootMode::DryRunSimulation
     } else {
         BootMode::LiveLinuxPid1
     };
 
-    os_info!("PID1", "=== Inkling2-OS v0.1.0 (CUDA 13.5 sm_120a AI-Native Linux Appliance) ===");
+    os_info!(
+        "PID1",
+        "=== Inkling2-OS v0.1.1 (CUDA 13.5 sm_120a AI-Native Linux Appliance) ==="
+    );
 
     let report = match run_early_boot(mode) {
         Ok(r) => r,
@@ -39,7 +52,41 @@ fn main() -> ExitCode {
     };
 
     let policy = GpuPolicy::default();
-    apply_gpu_policy(policy, mode);
+    if dry_run {
+        apply_gpu_policy(policy, mode);
+    } else {
+        let root_type = std::fs::read_to_string("/proc/self/mountinfo")
+            .ok()
+            .and_then(|mounts| {
+                mounts.lines().find_map(|line| {
+                    let (left, right) = line.split_once(" - ")?;
+                    (left.split_whitespace().nth(4) == Some("/"))
+                        .then(|| right.split_whitespace().next().map(str::to_owned))
+                        .flatten()
+                })
+            })
+            .unwrap_or_else(|| "unknown".into());
+        os_info!(
+            "PID1",
+            "Root filesystem active: {root_type}; PID={}",
+            process::id()
+        );
+        let gpu = process::Command::new("/usr/bin/nvidia-smi")
+            .args([
+                "--query-gpu=name,memory.free,memory.total",
+                "--format=csv,noheader",
+            ])
+            .output();
+        if let Some(gpu) = gpu.ok().filter(|output| output.status.success()) {
+            os_info!(
+                "PID1",
+                "GPU revealed by the driver: {}",
+                String::from_utf8_lossy(&gpu.stdout).trim()
+            );
+        } else {
+            os_warn!("PID1", "GPU unavailable; inference is in diagnostic mode");
+        }
+    }
 
     let net_rep = init_network(NetPolicy::default(), mode);
     os_info!(
@@ -51,38 +98,31 @@ fn main() -> ExitCode {
         net_rep.ntp_synced
     );
 
-    // Log deterministic VRAM + 2 MiB HugePages tier plans for the SC117 SQ-10 / SQ-15 / SQ-20 series
-    for (tier, size_mib) in [("SQ-10", 9_986u64), ("SQ-15", 13_685u64), ("SQ-20", 18_453u64)] {
-        let plan = compute_tier_plan(policy, size_mib, report.hugepages_2m);
-        os_info!(
-            "PID1",
-            "Tier Plan [{tier} ~{size_mib} MiB]: UsableVRAM={} MiB ({}% resident), HugePageRAM={} MiB",
-            plan.usable_vram_mib,
-            plan.estimated_vram_residency_pct,
-            plan.hugepage_ram_mib
-        );
-    }
+    if dry_run {
+        // Log deterministic VRAM + 2 MiB HugePages tier plans for the SC117 SQ-10 / SQ-15 / SQ-20 series
+        for (tier, size_mib) in [
+            ("SQ-10", 9_986u64),
+            ("SQ-15", 13_685u64),
+            ("SQ-20", 18_453u64),
+        ] {
+            let plan = compute_tier_plan(policy, size_mib, report.hugepages_2m);
+            os_info!(
+                "PID1",
+                "Tier Plan [{tier} ~{size_mib} MiB]: UsableVRAM={} MiB ({}% resident), HugePageRAM={} MiB",
+                plan.usable_vram_mib,
+                plan.estimated_vram_residency_pct,
+                plan.hugepage_ram_mib
+            );
+        }
 
-    if mode == BootMode::DryRunSimulation {
-        os_info!("PID1", "Dry-run boot verification complete. Ready for live Linux ISO execution.");
+        os_info!("PID1", "Dry-run boot planning finished");
         return ExitCode::SUCCESS;
     }
 
-    // Live Linux PID 1 supervision loop: spawn inkling2-shell on tty1 and restart on exit.
-    os_info!("PID1", "Launching /usr/bin/inkling2-shell on primary console...");
-    loop {
-        match Command::new("/usr/bin/inkling2-shell").status() {
-            Ok(status) => {
-                os_warn!("PID1", "inkling2-shell exited with {status}; respawning in 1s...");
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
-            Err(e) => {
-                os_error!("PID1", "Failed to spawn /usr/bin/inkling2-shell: {e}; falling back to /bin/sh");
-                let _ = Command::new("/bin/sh").status();
-                std::thread::sleep(std::time::Duration::from_secs(2));
-            }
-        }
-    }
+    #[cfg(target_os = "linux")]
+    supervisor::supervise();
+    #[cfg(not(target_os = "linux"))]
+    ExitCode::FAILURE
 }
 
 #[cfg(test)]

@@ -80,7 +80,9 @@ impl DynamicLoraAdapter {
         let scale = (1.0 / (cfg.hidden_dim as f32)).sqrt();
         let mut state: u64 = 0x9e3779b97f4a7c15;
         for v in &mut a {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let u = ((state >> 33) as f32) / (u32::MAX as f32) * 2.0 - 1.0;
             *v = u * scale;
         }
@@ -101,26 +103,26 @@ impl DynamicLoraAdapter {
         let d = self.cfg.hidden_dim;
         let r = self.cfg.rank;
         let mut z = vec![0.0f32; r];
-        for ri in 0..r {
+        for (ri, projected) in z.iter_mut().enumerate() {
             let row = &self.a[ri * d..(ri + 1) * d];
             let mut acc = 0.0f32;
             for (wv, &hv) in row.iter().zip(h.iter().take(d)) {
                 acc += wv * hv;
             }
-            z[ri] = acc;
+            *projected = acc;
         }
 
         let scale = self.cfg.alpha / (r as f32);
         let mut delta = vec![0.0f32; d];
         let mut sq_norm = 0.0f32;
-        for di in 0..d {
+        for (di, update) in delta.iter_mut().enumerate() {
             let row = &self.b[di * r..(di + 1) * r];
             let mut acc = 0.0f32;
             for ri in 0..r {
                 acc += row[ri] * z[ri];
             }
             let val = acc * scale;
-            delta[di] = val;
+            *update = val;
             sq_norm += val * val;
         }
 
@@ -151,19 +153,18 @@ impl DynamicLoraAdapter {
 
         // z = A * h
         let mut z = vec![0.0f32; r];
-        for ri in 0..r {
+        for (ri, projected) in z.iter_mut().enumerate() {
             let row = &self.a[ri * d..(ri + 1) * d];
             let mut acc = 0.0f32;
             for (wv, &hv) in row.iter().zip(h.iter().take(d)) {
                 acc += wv * hv;
             }
-            z[ri] = acc;
+            *projected = acc;
         }
 
         // g_z = B^T * target_dir
         let mut gz = vec![0.0f32; r];
-        for di in 0..d.min(target_dir.len()) {
-            let td = target_dir[di];
+        for (di, &td) in target_dir.iter().take(d).enumerate() {
             let row = &self.b[di * r..(di + 1) * r];
             for ri in 0..r {
                 gz[ri] += row[ri] * td;
@@ -171,8 +172,7 @@ impl DynamicLoraAdapter {
         }
 
         // Update B += lr * target_dir * z^T
-        for di in 0..d.min(target_dir.len()) {
-            let td = target_dir[di];
+        for (di, &td) in target_dir.iter().take(d).enumerate() {
             let row = &mut self.b[di * r..(di + 1) * r];
             for ri in 0..r {
                 row[ri] = row[ri] * wd + lr * td * z[ri];
@@ -180,8 +180,7 @@ impl DynamicLoraAdapter {
         }
 
         // Update A += lr * g_z * h^T
-        for ri in 0..r {
-            let g = gz[ri];
+        for (ri, &g) in gz.iter().enumerate() {
             let row = &mut self.a[ri * d..(ri + 1) * d];
             for (wv, &hv) in row.iter_mut().zip(h.iter().take(d)) {
                 *wv = *wv * wd + lr * g * hv;
@@ -225,10 +224,14 @@ impl DynamicLoraAdapter {
         let tmp = path.with_extension("iklora.tmp");
         let mut f = File::create(&tmp).map_err(|e| e.to_string())?;
         f.write_all(LORA_MAGIC).map_err(|e| e.to_string())?;
-        f.write_all(&(self.cfg.hidden_dim as u32).to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&(self.cfg.rank as u32).to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&self.cfg.alpha.to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&self.evolution_steps.to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&(self.cfg.hidden_dim as u32).to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&(self.cfg.rank as u32).to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&self.cfg.alpha.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&self.evolution_steps.to_le_bytes())
+            .map_err(|e| e.to_string())?;
         for &v in &self.a {
             f.write_all(&v.to_le_bytes()).map_err(|e| e.to_string())?;
         }
@@ -252,7 +255,9 @@ impl DynamicLoraAdapter {
         let hidden_dim = u32::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11]]) as usize;
         let rank = u32::from_le_bytes([hdr[12], hdr[13], hdr[14], hdr[15]]) as usize;
         let alpha = f32::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]);
-        let evolution_steps = u64::from_le_bytes([hdr[20], hdr[21], hdr[22], hdr[23], hdr[24], hdr[25], hdr[26], hdr[27]]);
+        let evolution_steps = u64::from_le_bytes([
+            hdr[20], hdr[21], hdr[22], hdr[23], hdr[24], hdr[25], hdr[26], hdr[27],
+        ]);
 
         let mut a = vec![0.0f32; rank * hidden_dim];
         let mut b = vec![0.0f32; hidden_dim * rank];
@@ -266,7 +271,12 @@ impl DynamicLoraAdapter {
             *v = f32::from_le_bytes(buf);
         }
         Ok(Self {
-            cfg: LoraConfig { hidden_dim, rank, alpha, ..LoraConfig::default() },
+            cfg: LoraConfig {
+                hidden_dim,
+                rank,
+                alpha,
+                ..LoraConfig::default()
+            },
             a,
             b,
             prev_a: None,
@@ -283,7 +293,11 @@ mod tests {
 
     #[test]
     fn lora_starts_at_identity_evolves_and_rolls_back() {
-        let cfg = LoraConfig { hidden_dim: 64, rank: 8, ..LoraConfig::default() };
+        let cfg = LoraConfig {
+            hidden_dim: 64,
+            rank: 8,
+            ..LoraConfig::default()
+        };
         let mut lora = DynamicLoraAdapter::new(cfg);
         let h = vec![0.5f32; 64];
         let d0 = lora.forward_delta(&h);

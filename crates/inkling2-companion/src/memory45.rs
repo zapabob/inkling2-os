@@ -188,8 +188,12 @@ impl Memory45Store {
         }
         let now = Self::now_sec();
         self.entries.sort_by(|a, b| {
-            let ra = a.importance * (-(now.saturating_sub(a.timestamp_sec) as f32) / (86400.0 * a.strength.max(0.1))).exp();
-            let rb = b.importance * (-(now.saturating_sub(b.timestamp_sec) as f32) / (86400.0 * b.strength.max(0.1))).exp();
+            let ra = a.importance
+                * (-(now.saturating_sub(a.timestamp_sec) as f32) / (86400.0 * a.strength.max(0.1)))
+                    .exp();
+            let rb = b.importance
+                * (-(now.saturating_sub(b.timestamp_sec) as f32) / (86400.0 * b.strength.max(0.1)))
+                    .exp();
             rb.total_cmp(&ra)
         });
         while self.serialized_size_bytes() > self.budget_bytes && self.entries.len() > 1 {
@@ -217,26 +221,40 @@ impl Memory45Store {
         let b1 = path.with_extension("ikm.bak1");
         let b2 = path.with_extension("ikm.bak2");
         let b3 = path.with_extension("ikm.bak3");
-        if b2.exists() { let _ = fs::rename(&b2, &b3); }
-        if b1.exists() { let _ = fs::rename(&b1, &b2); }
-        if path.exists() { let _ = fs::copy(path, &b1); }
+        if b2.exists() {
+            let _ = fs::rename(&b2, &b3);
+        }
+        if b1.exists() {
+            let _ = fs::rename(&b1, &b2);
+        }
+        if path.exists() {
+            let _ = fs::copy(path, &b1);
+        }
 
         let tmp = path.with_extension("ikm.tmp");
         let mut f = File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
         f.write_all(MAGIC).map_err(|e| e.to_string())?;
-        f.write_all(&(self.entries.len() as u64).to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&self.next_id.to_le_bytes()).map_err(|e| e.to_string())?;
-        f.write_all(&self.compactions.to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&(self.entries.len() as u64).to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&self.next_id.to_le_bytes())
+            .map_err(|e| e.to_string())?;
+        f.write_all(&self.compactions.to_le_bytes())
+            .map_err(|e| e.to_string())?;
 
         for e in &self.entries {
-            f.write_all(&e.id.to_le_bytes()).map_err(|err| err.to_string())?;
-            f.write_all(&e.timestamp_sec.to_le_bytes()).map_err(|err| err.to_string())?;
-            f.write_all(&e.importance.to_le_bytes()).map_err(|err| err.to_string())?;
-            f.write_all(&e.strength.to_le_bytes()).map_err(|err| err.to_string())?;
+            f.write_all(&e.id.to_le_bytes())
+                .map_err(|err| err.to_string())?;
+            f.write_all(&e.timestamp_sec.to_le_bytes())
+                .map_err(|err| err.to_string())?;
+            f.write_all(&e.importance.to_le_bytes())
+                .map_err(|err| err.to_string())?;
+            f.write_all(&e.strength.to_le_bytes())
+                .map_err(|err| err.to_string())?;
             let emb_u8: [u8; EMBED_DIM] = e.embed_q8.map(|v| v as u8);
             f.write_all(&emb_u8).map_err(|err| err.to_string())?;
             let tb = e.text.as_bytes();
-            f.write_all(&(tb.len() as u32).to_le_bytes()).map_err(|err| err.to_string())?;
+            f.write_all(&(tb.len() as u32).to_le_bytes())
+                .map_err(|err| err.to_string())?;
             f.write_all(tb).map_err(|err| err.to_string())?;
         }
         f.sync_all().map_err(|e| e.to_string())?;
@@ -249,20 +267,32 @@ impl Memory45Store {
     pub fn load(path: &Path) -> Result<Self, String> {
         let mut f = File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
         let mut hdr = [0u8; 32];
-        f.read_exact(&mut hdr).map_err(|e| format!("read header: {e}"))?;
+        f.read_exact(&mut hdr)
+            .map_err(|e| format!("read header: {e}"))?;
         if &hdr[0..8] != MAGIC {
             return Err("invalid IKMEM45 magic".to_string());
         }
-        let count = u64::from_le_bytes([hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15]]) as usize;
-        let next_id = u64::from_le_bytes([hdr[16], hdr[17], hdr[18], hdr[19], hdr[20], hdr[21], hdr[22], hdr[23]]);
-        let compactions = u64::from_le_bytes([hdr[24], hdr[25], hdr[26], hdr[27], hdr[28], hdr[29], hdr[30], hdr[31]]);
+        let count = u64::from_le_bytes([
+            hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15],
+        ]) as usize;
+        let next_id = u64::from_le_bytes([
+            hdr[16], hdr[17], hdr[18], hdr[19], hdr[20], hdr[21], hdr[22], hdr[23],
+        ]);
+        let compactions = u64::from_le_bytes([
+            hdr[24], hdr[25], hdr[26], hdr[27], hdr[28], hdr[29], hdr[30], hdr[31],
+        ]);
 
         let mut entries = Vec::with_capacity(count);
         for _ in 0..count {
             let mut rec = [0u8; 92];
-            f.read_exact(&mut rec).map_err(|e| format!("read record: {e}"))?;
-            let id = u64::from_le_bytes([rec[0], rec[1], rec[2], rec[3], rec[4], rec[5], rec[6], rec[7]]);
-            let timestamp_sec = u64::from_le_bytes([rec[8], rec[9], rec[10], rec[11], rec[12], rec[13], rec[14], rec[15]]);
+            f.read_exact(&mut rec)
+                .map_err(|e| format!("read record: {e}"))?;
+            let id = u64::from_le_bytes([
+                rec[0], rec[1], rec[2], rec[3], rec[4], rec[5], rec[6], rec[7],
+            ]);
+            let timestamp_sec = u64::from_le_bytes([
+                rec[8], rec[9], rec[10], rec[11], rec[12], rec[13], rec[14], rec[15],
+            ]);
             let importance = f32::from_le_bytes([rec[16], rec[17], rec[18], rec[19]]);
             let strength = f32::from_le_bytes([rec[20], rec[21], rec[22], rec[23]]);
             let mut embed_q8 = [0i8; EMBED_DIM];
@@ -271,7 +301,8 @@ impl Memory45Store {
             }
             let text_len = u32::from_le_bytes([rec[88], rec[89], rec[90], rec[91]]) as usize;
             let mut tb = vec![0u8; text_len];
-            f.read_exact(&mut tb).map_err(|e| format!("read text: {e}"))?;
+            f.read_exact(&mut tb)
+                .map_err(|e| format!("read text: {e}"))?;
             let text = String::from_utf8(tb).map_err(|e| format!("utf8: {e}"))?;
             entries.push(MemoryEntry {
                 id,

@@ -1,4 +1,6 @@
 target/
+.git/
+*.exe
 .venv/
 dist/
 state/

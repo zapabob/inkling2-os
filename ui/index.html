@@ -5,15 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Inkling2-OS — Strata CUDA 13.5 Console</title>
   <meta name="color-scheme" content="light dark" />
-  <script>
-    try {
-      const saved = localStorage.getItem('inkling2.theme') || 'system';
-      const dark = saved === 'dark' || (saved === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
-      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-    } catch {
-      document.documentElement.dataset.theme = 'dark';
-    }
-  </script>
+  <script src="/theme.js"></script>
   <style>
     :root {
       --canvas: #f5f5f7;
@@ -229,7 +221,7 @@
     /* Workspace Split */
     .workspace {
       display: grid;
-      grid-template-columns: 276px 1fr;
+      grid-template-columns: 276px minmax(0, 1fr);
       min-height: 0;
       overflow: hidden;
     }
@@ -339,6 +331,7 @@
     /* Main Views */
     .main-pane {
       min-height: 0;
+      min-width: 0;
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -644,11 +637,25 @@
       flex-wrap: wrap;
     }
 
+    #access-dialog {
+      width: min(360px, calc(100vw - 32px));
+      color: var(--text-primary);
+    }
+    #access-dialog .row-actions { margin-top: 12px; }
+    #access-token { display: block; width: 100%; margin: 8px 0; }
+    #browser-url { min-width: 0; }
+    .composer-opts, .panel-header { flex-wrap: wrap; }
+
     @media (max-width: 900px) {
-      .workspace { grid-template-columns: 1fr; }
+      .app-shell { grid-template-rows: auto minmax(0, 1fr); }
+      .titlebar { flex-wrap: wrap; padding: 8px 12px; gap: 8px; }
+      .titlebar-right { margin-inline-start: auto; }
+      .segmented { order: 1; width: 100%; overflow-x: auto; }
+      .seg-btn { flex: 1 0 auto; padding-inline: 8px; white-space: nowrap; }
+      .workspace { grid-template-columns: minmax(0, 1fr); }
       .sidebar {
-        position: fixed;
-        top: 52px;
+        position: absolute;
+        top: 0;
         left: 0;
         bottom: 0;
         width: 280px;
@@ -657,10 +664,16 @@
         transition: transform 0.2s ease;
         box-shadow: var(--shadow-md);
       }
+      .workspace { position: relative; }
       .sidebar.open { transform: translateX(0); }
       .mobile-menu-btn { display: inline-flex; }
       .grid-3, .grid-2 { grid-template-columns: 1fr; }
       .brand-sub { display: none; }
+    }
+    @media (max-width: 480px) {
+      .traffic-lights { display: none; }
+      .titlebar-left { gap: 8px; }
+      .titlebar-right .status-pill { display: none; }
     }
   </style>
 </head>
@@ -683,6 +696,8 @@
       <nav class="segmented" role="tablist" aria-label="Workspace views">
         <button type="button" class="seg-btn active" role="tab" data-view="chat">Chat</button>
         <button type="button" class="seg-btn" role="tab" data-view="tensor">Tensor Core</button>
+        <button type="button" class="seg-btn" role="tab" data-view="finder">Finder FS</button>
+        <button type="button" class="seg-btn" role="tab" data-view="browser">Browser</button>
         <button type="button" class="seg-btn" role="tab" data-view="memory">Memory &amp; LoRA</button>
         <button type="button" class="seg-btn" role="tab" data-view="models">Models &amp; CLI</button>
       </nav>
@@ -692,6 +707,7 @@
           <span class="pulse-dot"></span>
           <span id="health-label">Connecting…</span>
         </span>
+        <button type="button" class="icon-btn" id="btn-access">Unlock</button>
         <button type="button" class="icon-btn" id="btn-theme" title="Switch Light / Dark theme">Theme</button>
       </div>
     </header>
@@ -710,7 +726,7 @@
             </div>
             <div class="kv-row">
               <span class="kv-label">Endpoint</span>
-              <span class="kv-val">127.0.0.1:8080</span>
+              <span class="kv-val" id="sb-endpoint">Loopback</span>
             </div>
           </div>
         </div>
@@ -783,10 +799,10 @@
                 <div class="inline-controls">
                   <label>Max Tokens:
                     <select id="opt-max-tokens" class="mac-select">
-                      <option value="256">256</option>
-                      <option value="512" selected>512</option>
-                      <option value="1024">1024</option>
-                      <option value="2048">2048</option>
+                      <option value="32" selected>32</option>
+                      <option value="64">64</option>
+                      <option value="128">128</option>
+                      <option value="256">256 (upstream)</option>
                     </select>
                   </label>
                   <label>Reasoning:
@@ -863,6 +879,68 @@
             <div class="card">
               <div class="card-title">Engine Output Log</div>
               <div class="mono-log" id="tc-log">Click "Run Tensor Core Bench" to execute live CUDA 13.5 sm_120a kernels on RTX 5060 Ti.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 2B: HARDENED FINDER FS -->
+        <section class="view" id="view-finder">
+          <div class="panel-container">
+            <div class="panel-header">
+              <div>
+                <h2>Hardened Finder (Jailed Filesystem)</h2>
+                <p>Read-only UTF-8 previews of explicitly shared documents. The model directory allows listing only.</p>
+              </div>
+              <div class="row-actions">
+                <select id="fs-root" class="mac-select" style="width:auto;">
+                  <option value="workspace" selected>Shared documents</option>
+                  <option value="models">Models (.strata)</option>
+                </select>
+                <button type="button" class="btn-secondary" id="btn-fs-up">↑ Up</button>
+                <button type="button" class="btn-secondary" id="btn-fs-refresh">Refresh</button>
+              </div>
+            </div>
+
+            <div class="grid-2">
+              <div class="card">
+                <div class="card-title">Directory: <span id="fs-breadcrumb" class="kv-val">/</span></div>
+                <div id="fs-list" style="max-height:420px;overflow-y:auto;">Loading…</div>
+              </div>
+              <div class="card">
+                <div class="card-title">Safe Read-Only Preview <span id="fs-meta" class="kv-val" style="float:right;text-transform:none;"></span></div>
+                <div class="mono-log" id="fs-preview" style="max-height:420px;">Select a file on the left to inspect it safely (up to 64 KiB).</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW 2C: HARDENED BROWSER -->
+        <section class="view" id="view-browser">
+          <div class="panel-container">
+            <div class="panel-header">
+              <div>
+                <h2>Hardened Browser (TLS 1.2+ · Script-Free)</h2>
+                <p>HTTPS専用・SSRF遮断（プライベートIP/メタデータ拒否）・JavaScript完全除去サンドボックス閲覧</p>
+              </div>
+              <span class="status-pill" id="browser-shield">TLS 1.2+ · No-JS</span>
+            </div>
+
+            <div class="card">
+              <div class="row-actions" style="margin-bottom:10px;">
+                <input id="browser-url" class="mac-input" style="flex:1;" value="https://github.com/zapabob/inkling2-os" placeholder="https://..." />
+                <button type="button" class="btn-primary" id="btn-browser-go">Fetch Safe</button>
+              </div>
+              <div class="quick-prompts" style="justify-content:flex-start;">
+                <button type="button" class="chip browser-quick" data-url="https://github.com/zapabob/inkling2-os">inkling2-os</button>
+                <button type="button" class="chip browser-quick" data-url="https://github.com/zapabob/inkling2-cuda-engine">inkling2-cuda-engine</button>
+                <button type="button" class="chip browser-quick" data-url="https://huggingface.co">Hugging Face</button>
+                <button type="button" class="chip browser-quick" data-url="http://127.0.0.1:8080/health">Test SSRF Block</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title"><span id="browser-title">Ready</span> <span id="browser-meta" class="kv-val" style="float:right;text-transform:none;"></span></div>
+              <div class="mono-log" id="browser-body" style="max-height:420px;">Enter an HTTPS URL and click "Fetch Safe". Results are displayed as plain text. Redirects are blocked.</div>
             </div>
           </div>
         </section>
@@ -955,298 +1033,17 @@ inkling2-shell inspect &lt;path.strata&gt;         # Inspect 64B STRATA v1.1 hea
     </div>
   </div>
 
-  <script>
-    const $ = (id) => document.getElementById(id);
-
-    // Theme switch
-    $('btn-theme').addEventListener('click', () => {
-      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-      document.documentElement.dataset.theme = next;
-      try { localStorage.setItem('inkling2.theme', next); } catch {}
-    });
-
-    // Mobile sidebar toggle
-    $('btn-sidebar').addEventListener('click', () => {
-      $('sidebar').classList.toggle('open');
-    });
-
-    // Segmented view switcher
-    document.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const target = btn.dataset.view;
-        document.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', b === btn));
-        document.querySelectorAll('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + target));
-        $('sidebar').classList.remove('open');
-      });
-    });
-
-    async function api(path, opts = {}) {
-      const res = await fetch(path, {
-        headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-        ...opts,
-      });
-      const text = await res.text();
-      try { return { ok: res.ok, status: res.status, data: JSON.parse(text) }; }
-      catch { return { ok: res.ok, status: res.status, data: { raw: text } }; }
-    }
-
-    async function refreshHealthAndState() {
-      try {
-        const [h, mem, lora] = await Promise.all([
-          api('/health'),
-          api('/v1/memory/stats'),
-          api('/v1/lora/stats'),
-        ]);
-        const pill = $('health-pill');
-        if (h.ok && h.data.status === 'ok') {
-          pill.classList.remove('offline');
-          $('health-label').textContent = 'Online · ' + (h.data.cuda || '13.5');
-        } else {
-          pill.classList.add('offline');
-          $('health-label').textContent = 'Offline';
-        }
-        if (mem.ok) {
-          const usedMib = (mem.data.serialized_bytes / (1024 * 1024)).toFixed(2);
-          const capMib = (mem.data.budget_bytes / (1024 * 1024)).toFixed(0);
-          const pct = Math.min(100, (mem.data.serialized_bytes / Math.max(1, mem.data.budget_bytes)) * 100);
-          $('sb-mem-entries').textContent = mem.data.entries + ' entries';
-          $('sb-mem-bytes').textContent = `${usedMib} / ${capMib} MiB`;
-          $('sb-mem-bar').style.width = Math.max(2, pct) + '%';
-        }
-        if (lora.ok) {
-          $('sb-lora-steps').textContent = 'step ' + lora.data.steps;
-          $('lora-steps').textContent = lora.data.steps;
-          $('lora-reward').textContent = Number(lora.data.cumulative_reward || 0).toFixed(4);
-          $('lora-norms').textContent = `${Number(lora.data.norm_a || 0).toFixed(4)} / ${Number(lora.data.norm_b || 0).toFixed(4)}`;
-        }
-      } catch {
-        $('health-pill').classList.add('offline');
-        $('health-label').textContent = 'Offline';
-      }
-    }
-
-    async function refreshGpu() {
-      const r = await api('/v1/gpu/info');
-      if (!r.ok || !r.data.available) {
-        $('sb-gpu-name').textContent = 'Unavailable';
-        return;
-      }
-      const g = r.data;
-      const shortName = (g.name || 'GPU').replace('NVIDIA GeForce ', '');
-      const vramPct = Math.min(100, Math.round((g.memory_used_mib / Math.max(1, g.memory_total_mib)) * 100));
-      $('sb-gpu-name').textContent = shortName;
-      $('sb-gpu-vram').textContent = `${g.memory_used_mib} / ${g.memory_total_mib} MiB`;
-      $('sb-vram-bar').style.width = vramPct + '%';
-      $('sb-gpu-util').textContent = `${g.utilization_gpu}% · ${g.temperature_c}°C`;
-      $('sb-gpu-pwr').textContent = `${g.power_draw_w.toFixed(1)}W · ${g.clock_sm_mhz} MHz`;
-
-      $('tc-vram-val').innerHTML = `${(g.memory_used_mib / 1024).toFixed(2)}<span class="metric-unit">/ ${(g.memory_total_mib / 1024).toFixed(1)} GiB</span>`;
-      $('tc-vram-sub').textContent = `${shortName} · Driver ${g.driver_version}`;
-      $('tc-temp-val').innerHTML = `${g.temperature_c}<span class="metric-unit">°C</span>`;
-      $('tc-util-sub').textContent = `SM Utilization: ${g.utilization_gpu}%`;
-      $('tc-pwr-val').innerHTML = `${g.power_draw_w.toFixed(1)}<span class="metric-unit">W</span>`;
-      $('tc-clk-sub').textContent = `Limit ${g.power_limit_w.toFixed(0)}W · SM ${g.clock_sm_mhz} MHz`;
-    }
-
-    async function refreshModels() {
-      const r = await api('/v1/models');
-      const sel = $('model-select');
-      const list = $('models-list');
-      if (!r.ok || !Array.isArray(r.data.data) || r.data.data.length === 0) {
-        sel.innerHTML = '<option value="Inkling-2-Mini">No local .strata found</option>';
-        list.textContent = 'No .strata models discovered under INKLING2_MODELS_DIR.';
-        return;
-      }
-      sel.innerHTML = '';
-      list.innerHTML = '';
-      r.data.data.forEach((m) => {
-        const opt = document.createElement('option');
-        opt.value = m.id;
-        opt.textContent = m.id;
-        sel.appendChild(opt);
-
-        const gib = (m.bytes / (1024 ** 3)).toFixed(2);
-        const div = document.createElement('div');
-        div.className = 'list-item';
-        div.innerHTML = `<div><strong>${escapeHtml(m.id)}</strong><div style="font-size:12px;color:var(--text-tertiary);">${escapeHtml(m.owned_by || 'SC117')}</div></div><span class="kv-val">${gib} GiB</span>`;
-        list.appendChild(div);
-      });
-    }
-
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    }
-
-    // Chat
-    function appendMessage(role, content, reasoning, meta) {
-      const empty = $('chat-empty');
-      if (empty) empty.remove();
-      const wrap = document.createElement('div');
-      wrap.className = 'msg ' + role;
-
-      if (reasoning) {
-        const det = document.createElement('details');
-        det.className = 'thinking';
-        const sum = document.createElement('summary');
-        sum.textContent = 'Reasoning Trace';
-        const pre = document.createElement('pre');
-        pre.textContent = reasoning;
-        det.appendChild(sum);
-        det.appendChild(pre);
-        wrap.appendChild(det);
-      }
-
-      const bubble = document.createElement('div');
-      bubble.className = 'msg-bubble';
-      bubble.textContent = content || '(empty response)';
-      wrap.appendChild(bubble);
-
-      if (meta) {
-        const m = document.createElement('div');
-        m.className = 'msg-meta';
-        m.textContent = meta;
-        wrap.appendChild(m);
-      }
-
-      const sc = $('chat-scroll');
-      sc.appendChild(wrap);
-      sc.scrollTop = sc.scrollHeight;
-    }
-
-    async function sendChat(textOverride) {
-      const input = $('chat-input');
-      const text = (textOverride ?? input.value).trim();
-      if (!text) return;
-      if (!textOverride) input.value = '';
-      appendMessage('user', text, null, null);
-
-      const btn = $('btn-send');
-      btn.disabled = true;
-      const t0 = performance.now();
-      $('chat-status').textContent = 'Generating on CUDA 13.5 sm_120a…';
-
-      try {
-        const res = await api('/v1/chat/completions', {
-          method: 'POST',
-          body: JSON.stringify({
-            model: $('model-select').value,
-            messages: [{ role: 'user', content: text }],
-            max_tokens: Number($('opt-max-tokens').value),
-            reasoning_effort: $('opt-effort').value,
-          }),
-        });
-        const dt = ((performance.now() - t0) / 1000).toFixed(2);
-        if (res.ok && res.data.choices && res.data.choices[0]) {
-          const msg = res.data.choices[0].message || {};
-          const usage = res.data.usage;
-          const meta = usage
-            ? `${dt}s · prompt ${usage.prompt_tokens || 0} / comp ${usage.completion_tokens || 0} tok`
-            : `${dt}s · ${res.data.model || 'Inkling-2-Mini'}`;
-          appendMessage('assistant', msg.content || '(reasoning only — increase max_tokens)', msg.reasoning_content || null, meta);
-          $('chat-status').textContent = `Done in ${dt}s`;
-        } else {
-          appendMessage('assistant', 'Error: ' + JSON.stringify(res.data), null, `HTTP ${res.status}`);
-          $('chat-status').textContent = 'Request failed';
-        }
-      } catch (e) {
-        appendMessage('assistant', 'Network error: ' + e.message, null, null);
-        $('chat-status').textContent = 'Disconnected';
-      } finally {
-        btn.disabled = false;
-        refreshHealthAndState();
-      }
-    }
-
-    $('btn-send').addEventListener('click', () => sendChat());
-    $('chat-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendChat();
-      }
-    });
-    document.querySelectorAll('.chip').forEach((c) => {
-      c.addEventListener('click', () => sendChat(c.dataset.prompt));
-    });
-
-    // Tensor Core Bench
-    $('btn-refresh-gpu').addEventListener('click', refreshGpu);
-    $('btn-run-tc').addEventListener('click', async () => {
-      const btn = $('btn-run-tc');
-      btn.disabled = true;
-      $('tc-log').textContent = 'Running CUDA 13.5 sm_120a Tensor Core benchmark (BF16 / INT8 / NVFP4)…';
-      try {
-        const r = await api('/v1/gpu/bench-tc', { method: 'POST', body: '{}' });
-        if (r.ok) {
-          const bf16 = Number(r.data.bf16_tflops || 0);
-          const int8 = Number(r.data.int8_tops || 0);
-          const nvfp4 = Number(r.data.nvfp4_tflops || 0);
-          const peak = Math.max(bf16, int8, nvfp4, 1);
-          $('val-bf16').textContent = bf16 > 0 ? `${bf16.toFixed(2)} TFLOPS` : '—';
-          $('val-int8').textContent = int8 > 0 ? `${int8.toFixed(2)} TOPS` : '—';
-          $('val-nvfp4').textContent = nvfp4 > 0 ? `${nvfp4.toFixed(2)} TFLOPS` : '—';
-          $('bar-bf16').style.width = `${Math.round((bf16 / peak) * 100)}%`;
-          $('bar-int8').style.width = `${Math.round((int8 / peak) * 100)}%`;
-          $('bar-nvfp4').style.width = `${Math.round((nvfp4 / peak) * 100)}%`;
-          $('tc-log').textContent = r.data.log || r.data.result || JSON.stringify(r.data, null, 2);
-        } else {
-          $('tc-log').textContent = 'Benchmark error: ' + JSON.stringify(r.data);
-        }
-      } finally {
-        btn.disabled = false;
-        refreshGpu();
-      }
-    });
-
-    // Memory45 & LoRA
-    $('btn-refresh-mem').addEventListener('click', refreshHealthAndState);
-    $('btn-mem-add').addEventListener('click', async () => {
-      const text = $('mem-add-text').value.trim();
-      if (!text) return;
-      const importance = parseFloat($('mem-add-imp').value) || 0.85;
-      const r = await api('/v1/memory/add', { method: 'POST', body: JSON.stringify({ text, importance }) });
-      if (r.ok) {
-        $('mem-add-text').value = '';
-        refreshHealthAndState();
-      }
-    });
-    $('btn-mem-recall').addEventListener('click', async () => {
-      const query = $('mem-recall-q').value.trim();
-      const r = await api('/v1/memory/recall', { method: 'POST', body: JSON.stringify({ query }) });
-      const box = $('mem-hits');
-      if (!r.ok || !Array.isArray(r.data.hits) || r.data.hits.length === 0) {
-        box.innerHTML = '<div class="kv-label">No matching memories found.</div>';
-        return;
-      }
-      box.innerHTML = r.data.hits.map((h) =>
-        `<div class="list-item"><div><div>${escapeHtml(h.text)}</div><div style="font-size:11.5px;color:var(--text-tertiary);font-family:var(--font-mono);">id=${h.id} · imp=${h.importance} · str=${h.strength}</div></div></div>`
-      ).join('');
-    });
-    $('btn-lora-step').addEventListener('click', async () => {
-      const text = $('lora-text').value.trim() || 'positive reinforcement';
-      const reward = parseFloat($('lora-r').value) || 0.5;
-      await api('/v1/lora/reinforce', { method: 'POST', body: JSON.stringify({ text, reward }) });
-      $('lora-text').value = '';
-      refreshHealthAndState();
-    });
-    $('btn-lora-rollback').addEventListener('click', async () => {
-      await api('/v1/lora/rollback', { method: 'POST', body: '{}' });
-      refreshHealthAndState();
-    });
-    $('btn-voice-say').addEventListener('click', async () => {
-      const text = $('voice-text').value.trim();
-      if (!text) return;
-      $('voice-status').textContent = 'Synthesizing…';
-      const r = await api('/v1/voice/say', { method: 'POST', body: JSON.stringify({ text }) });
-      $('voice-status').textContent = r.ok ? (r.data.detail || 'OK') : ('Error: ' + (r.data.error || r.status));
-    });
-    $('btn-refresh-models').addEventListener('click', refreshModels);
-
-    // Boot
-    refreshHealthAndState();
-    refreshGpu();
-    refreshModels();
-    setInterval(refreshGpu, 5000);
-    setInterval(refreshHealthAndState, 10000);
-  </script>
+  <dialog id="access-dialog" class="card" aria-labelledby="access-title">
+    <div class="card-title" id="access-title">Unlock Inkling2-OS</div>
+    <p id="access-help">On Windows, run <code>./scripts/start-windows-console.ps1 -CopyToken Console</code> in PowerShell, then paste the token here. On Linux, use the console token supplied by the appliance administrator.</p>
+    <label for="access-token">Console token</label>
+    <input id="access-token" class="mac-select" type="password" autocomplete="off" spellcheck="false" aria-describedby="access-help">
+    <div id="access-status" role="status"></div>
+    <div class="row-actions">
+      <button type="button" class="btn-secondary" id="access-cancel">Cancel</button>
+      <button type="button" class="btn-primary" id="access-confirm">Unlock</button>
+    </div>
+  </dialog>
+  <script src="/console.js"></script>
 </body>
 </html>

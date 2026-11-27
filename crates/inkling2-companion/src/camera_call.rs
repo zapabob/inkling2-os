@@ -59,27 +59,47 @@ pub fn capture_webcam_frame(cfg: &CameraConfig, out_jpg: &Path) -> Result<String
     let output = if cfg!(target_os = "linux") {
         Command::new(ffmpeg_bin)
             .args([
-                "-y", "-f", "video4linux2", "-i", "/dev/video0",
-                "-frames:v", "1", "-vf", &vf,
+                "-y",
+                "-f",
+                "video4linux2",
+                "-i",
+                "/dev/video0",
+                "-frames:v",
+                "1",
+                "-vf",
+                &vf,
                 &out_jpg.to_string_lossy(),
             ])
             .output()
     } else {
         Command::new(ffmpeg_bin)
             .args([
-                "-y", "-f", "dshow", "-i", "video=Integrated Camera",
-                "-frames:v", "1", "-vf", &vf,
+                "-y",
+                "-f",
+                "dshow",
+                "-i",
+                "video=Integrated Camera",
+                "-frames:v",
+                "1",
+                "-vf",
+                &vf,
                 &out_jpg.to_string_lossy(),
             ])
             .output()
     };
 
     match output {
-        Ok(o) if o.status.success() => Ok(format!("Captured {w}x{h} vision frame -> {}", out_jpg.display())),
+        Ok(o) if o.status.success() => Ok(format!(
+            "Captured {w}x{h} vision frame -> {}",
+            out_jpg.display()
+        )),
         Ok(o) => Err(format!(
             "webcam capture unavailable ({}): {}",
             o.status,
-            String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("no camera device")
+            String::from_utf8_lossy(&o.stderr)
+                .lines()
+                .last()
+                .unwrap_or("no camera device")
         )),
         Err(e) => Err(format!("ffmpeg unavailable: {e}")),
     }

@@ -56,7 +56,9 @@ fn discover_linux_nics() -> Vec<String> {
     };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name != "lo" && (name.starts_with("en") || name.starts_with("eth") || name.starts_with("wl")) {
+        if name != "lo"
+            && (name.starts_with("en") || name.starts_with("eth") || name.starts_with("wl"))
+        {
             nics.push(name);
         }
     }
@@ -67,15 +69,24 @@ fn discover_linux_nics() -> Vec<String> {
 /// Execute Inkling2-OS PID 1 network & firewall bring-up.
 pub fn init_network(policy: NetPolicy, mode: BootMode) -> NetReport {
     if mode == BootMode::DryRunSimulation {
-        os_info!("NetInit", "[sim] nft -f /etc/inkling2/nftables.conf (default-deny inbound)");
-        os_info!("NetInit", "[sim] ip link set lo up && ip addr add 127.0.0.1/8 dev lo");
+        os_info!(
+            "NetInit",
+            "[sim] nft -f /etc/inkling2/nftables.conf (default-deny inbound)"
+        );
+        os_info!(
+            "NetInit",
+            "[sim] ip link set lo up && ip addr add 127.0.0.1/8 dev lo"
+        );
         os_info!(
             "NetInit",
             "[sim] dhcpcd --timeout {} (Ethernet/Wi-Fi) + /etc/ssl/certs/ca-certificates.crt",
             policy.dhcp_timeout_secs
         );
         if policy.sync_ntp_for_tls {
-            os_info!("NetInit", "[sim] chronyd -q (NTP sync for TLS cert validation)");
+            os_info!(
+                "NetInit",
+                "[sim] chronyd -q (NTP sync for TLS cert validation)"
+            );
         }
         return NetReport {
             firewall_loaded: policy.enforce_firewall,
@@ -108,10 +119,26 @@ pub fn init_network(policy: NetPolicy, mode: BootMode) -> NetReport {
         .map(|s| s.success())
         .unwrap_or(false);
 
+    if policy.enforce_firewall && !firewall_loaded {
+        os_warn!(
+            "NetInit",
+            "Firewall unavailable; external interface setup skipped"
+        );
+        return NetReport {
+            firewall_loaded,
+            loopback_up,
+            interfaces: Vec::new(),
+            ntp_synced: false,
+        };
+    }
+
     // 3. Discover NICs and configure DHCP / Wi-Fi
     let interfaces = discover_linux_nics();
     if interfaces.is_empty() {
-        os_warn!("NetInit", "No external NICs found; continuing in offline local-inference mode");
+        os_warn!(
+            "NetInit",
+            "No external NICs found; continuing in offline local-inference mode"
+        );
         return NetReport {
             firewall_loaded,
             loopback_up,
@@ -122,7 +149,9 @@ pub fn init_network(policy: NetPolicy, mode: BootMode) -> NetReport {
 
     let timeout_str = policy.dhcp_timeout_secs.to_string();
     for nic in &interfaces {
-        let _ = Command::new("/sbin/ip").args(["link", "set", nic, "up"]).status();
+        let _ = Command::new("/sbin/ip")
+            .args(["link", "set", nic, "up"])
+            .status();
         if nic.starts_with("wl") && Path::new("/etc/inkling2/wifi.conf").exists() {
             let _ = Command::new("/sbin/wpa_supplicant")
                 .args(["-B", "-i", nic, "-c", "/etc/inkling2/wifi.conf"])
@@ -141,15 +170,18 @@ pub fn init_network(policy: NetPolicy, mode: BootMode) -> NetReport {
 
     // Ensure fallback DNS resolvers exist if DHCP did not populate resolv.conf
     if !Path::new("/etc/resolv.conf").exists() {
-        let _ = fs::write("/etc/resolv.conf", "nameserver 1.1.1.1\nnameserver 9.9.9.9\n");
+        let _ = fs::write(
+            "/etc/resolv.conf",
+            "nameserver 1.1.1.1\nnameserver 9.9.9.9\n",
+        );
     }
 
     // 4. Sync clock via NTP for TLS certificate verification
     let mut ntp_synced = false;
-    if policy.sync_ntp_for_tls {
-        if let Ok(s) = Command::new("/usr/sbin/chronyd").arg("-q").status() {
-            ntp_synced = s.success();
-        }
+    if policy.sync_ntp_for_tls
+        && let Ok(s) = Command::new("/usr/sbin/chronyd").arg("-q").status()
+    {
+        ntp_synced = s.success();
     }
 
     NetReport {
