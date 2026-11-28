@@ -2,7 +2,7 @@
 
 Open **Inkling2 Desktop** to chat with a local SC117 model, read a document, browse the web or open Windows apps and settings. Hermes Agent and Strata can use the same native CUDA worker at `http://127.0.0.1:18083/v1`. The Windows desktop runs directly on the PC and can open at sign-in.
 
-Download both [Inkling2-OS for Windows](https://github.com/zapabob/inkling2-os/releases/tag/v1.1.0) and the [matching CUDA engine](https://github.com/zapabob/inkling2-cuda-engine/releases/tag/v1.1.0). Each release includes SHA-256 checksums. Supply your original SC117 SQ-10, SQ-15 or SQ-20 `.strata` weights. The desktop includes their tokenizer. For the public Linux diagnostic image, see the [Linux release](https://github.com/zapabob/inkling2-os/releases/tag/v0.1.1-linux.1).
+Download both [Inkling2-OS for Windows](https://github.com/zapabob/inkling2-os/releases/tag/v1.1.0) and the [matching CUDA engine](https://github.com/zapabob/inkling2-cuda-engine/releases/tag/v1.1.0). Each release includes SHA-256 checksums. Supply your original SC117 SQ-10, SQ-15 or SQ-20 `.strata` weights. The desktop includes their tokenizer. The public Linux diagnostic ISO is available from the [Linux releases](https://github.com/zapabob/inkling2-os/releases?q=linux).
 
 ![Inkling2 Desktop on Windows and the 131,072-token context setting. The SQ-10 hardware check used a short reference prompt.](docs/media/inkling2-desktop-131k.png)
 

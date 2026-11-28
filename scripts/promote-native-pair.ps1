@@ -81,7 +81,7 @@ foreach ($asset in $receipt.assets) {
 }
 $consoleZip = $files["inkling2-os-v$version-win64-console.zip"]
 $engineZip = $files['inkling2-cuda-engine-win64-sm120a.zip']
-$iso = $files['inkling2-os-v0.1.1-x86_64-sm120.iso']
+$iso = $files['inkling2-os-v1.1.0-x86_64-sm120.iso']
 if (-not $consoleZip -or -not $engineZip -or (-not $windowsOnly -and -not $iso)) { throw 'The paired release assets are incomplete.' }
 
 if ($Stage -eq 'Install') {

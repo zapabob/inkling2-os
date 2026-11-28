@@ -103,7 +103,7 @@ def run_vm(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--iso", type=Path, default=Path("/out/inkling2-os-v0.1.1-x86_64-sm120.iso"))
+    parser.add_argument("--iso", type=Path, default=Path("/out/inkling2-os-v1.1.0-x86_64-sm120.iso"))
     parser.add_argument("--firmware", choices=("bios", "uefi"), action="append")
     parser.add_argument("--timeout", type=int)
     parser.add_argument("--installed-bundle", type=Path)
