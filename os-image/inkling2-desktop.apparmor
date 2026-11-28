@@ -1,8 +1,9 @@
 abi <abi/4.0>,
 include <tunables/global>
 
-# WebKit uses a user namespace for the content process on Ubuntu.
-profile inkling2-epiphany /usr/bin/{epiphany,epiphany-browser} flags=(unconfined) {
+# Ubuntu restricts user namespace creation by default. Firefox uses one for
+# its content sandbox. The console UID's network boundary is enforced by nftables.
+profile inkling2-console-browser /opt/inkling2-web/firefox/{firefox,firefox-bin} flags=(unconfined) {
   userns,
 }
 

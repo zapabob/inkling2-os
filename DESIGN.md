@@ -72,3 +72,9 @@ components:
 - **Contrast**: All body text, secondary metadata, and status badges meet WCAG AA (>= 4.5:1 for normal text, >= 3:1 for large text/controls) in both Light and Dark modes.
 - **Keyboard & Focus**: Visible `:focus-visible` macOS-style focus rings (`0 0 0 3px rgba(0, 113, 227, 0.35)`), semantic `<button>`, `<nav>`, `<main>`, `aria-live="polite"` for status updates.
 - **Loopback-Only Safety**: All API calls target relative same-origin loopback endpoints (`/health`, `/v1/gpu/info`, `/v1/gpu/bench-tc`, `/v1/models`, `/v1/chat/completions`, `/v1/memory/*`, `/v1/lora/*`, `/v1/voice/say`). No external CDN fonts, scripts, or analytics.
+
+## 4. Linux desktop
+
+The native session uses a dark teal canvas (`#17272c`) and slate panels (`#23383f`). The 36 px top bar puts the Inkling2 name on the left and the engine state, network route and clock on the right. The route indicator describes the operating system's default IPv4 route. AI readiness comes from the local engine status endpoint.
+
+The bottom Dock is centered and sized to its launchers. It uses a 16 px corner radius, 32 px system icons and names on hover. Both panels reserve space for app windows. The Dock opens the existing console destinations and the native terminal, Tor Browser and system information.

@@ -1,0 +1,42 @@
+#!/bin/sh
+# Install the signed Mozilla archive in the private appliance only.
+set -eu
+
+version=153.8.0esr
+archive="firefox-$version.tar.xz"
+archive_path="linux-x86_64/en-US/$archive"
+origin="https://releases.mozilla.org/pub/firefox/releases/$version"
+primary_key=14F26682D0916CDD81E37B6D61B7B526D98F0353
+signing_key=827E658608679618CD349F93678E455D76767AA3
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+GNUPGHOME="$work/gnupg"
+export GNUPGHOME
+mkdir -m 0700 "$GNUPGHOME"
+cd "$work"
+
+fetch() {
+    curl --fail --silent --show-error --location --proto '=https' --retry 2 \
+        --connect-timeout 15 --max-time 240 --output "$2" "$origin/$1"
+}
+fetch KEY KEY
+fetch SHA512SUMS SHA512SUMS
+fetch SHA512SUMS.asc SHA512SUMS.asc
+gpg --batch --import KEY
+gpg --batch --export "$primary_key" > mozilla.gpg
+test -s mozilla.gpg
+gpgv --status-fd 1 --keyring "$work/mozilla.gpg" SHA512SUMS.asc SHA512SUMS > signature-status
+awk -v signer="$signing_key" -v primary="$primary_key" '
+    $1 == "[GNUPG:]" && $2 == "VALIDSIG" && $3 == signer && $NF == primary { valid = 1 }
+    END { exit !valid }
+' signature-status
+
+fetch "$archive_path" "$archive"
+awk -v path="$archive_path" -v archive="$archive" '
+    $2 == path { print $1 "  " archive; matches++ }
+    END { exit matches != 1 }
+' SHA512SUMS > console-browser.sha512
+sha512sum --check --strict console-browser.sha512
+install -d /verified
+tar --extract --xz --file "$archive" --directory /verified --no-same-owner
+test -x /verified/firefox/firefox

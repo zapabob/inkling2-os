@@ -123,7 +123,9 @@ Run `./os-image/build-iso.ps1` on an amd64 build host. The live ISO boots direct
 
 ## Private Linux USB
 
-The appliance signs in the local console account on tty1 once the bridge is ready. The desktop launcher opens Inkling2 Chat, Finder, Browser, Terminal and System Information. The browser opens `http://127.0.0.1:8080/` without an API key. Browser opens mediated public HTTPS documents and uses RustXNG Full for search. Finder previews approved files under `/var/lib/inkling2/files` through the broker. The graphical session runs as the local console user and can reach the loopback bridge. The AI bridge stays available when the browser window closes.
+The appliance signs in the local console account on tty1 once the bridge is ready. The Inkling2 desktop shows the engine state, network route and time in the top bar. The Dock opens Chat, Finder, Web, Tor Browser, Terminal and System Information.
+
+Chat, Finder and Web share the local console at `http://127.0.0.1:8080/` and require no API key. The private build verifies Mozilla's signature and the Firefox ESR archive checksum before installing the console browser. Review Mozilla's terms when Firefox opens for the first time. The console account reaches the local bridge through loopback. Web uses the broker for public HTTPS documents and RustXNG Full for search. Finder previews approved files under `/var/lib/inkling2/files` through the same broker. The AI bridge keeps running when the browser window closes.
 
 The **Tor Browser** launcher opens the native [Tor Project release](https://blog.torproject.org/new-release-tor-browser-1603/) in its own Linux account and uses the upstream default profile. The build verifies the Linux archive against the pinned [Tor Browser Developers key](https://support.torproject.org/tor-browser/getting-started/verifying-tor-browser/). Tor Browser operates independently of Inkling2 Browser and Finder.
 

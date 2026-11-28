@@ -4,7 +4,10 @@ set -eu
 # Invoked by the local session's launcher. Every entry uses a fixed executable.
 case "${1:-}" in
     chat|finder|browser)
-        exec epiphany-browser --private-instance "http://127.0.0.1:8080/#$1"
+        profile="$HOME/.inkling2-web"
+        install -d -m 0700 "$profile"
+        exec /opt/inkling2-web/firefox/firefox --profile "$profile" \
+            --new-tab "http://127.0.0.1:8080/#$1"
         ;;
     terminal)
         exec xterm -T 'Inkling2 Terminal'
@@ -18,7 +21,8 @@ case "${1:-}" in
             grep -E "^(MemTotal|MemAvailable):" /proc/meminfo
             df -h / /models
             printf "\nGPU reported by Inkling2\n"
-            curl --disable --noproxy "*" --fail --silent --show-error --max-time 5 +                http://127.0.0.1:8080/v1/gpu/info
+            curl --disable --noproxy "*" --fail --silent --show-error --max-time 5 \
+                http://127.0.0.1:8080/v1/gpu/info
             printf "\n"
         '
         ;;

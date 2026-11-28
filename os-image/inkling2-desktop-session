@@ -5,14 +5,16 @@ export HOME=/var/lib/inkling2/desktop-state
 export XDG_RUNTIME_DIR=/run/inkling2-desktop/user
 export GDK_BACKEND=x11
 export LANG=C.UTF-8
-# Reserve hardware acceleration for inference. The console is a local document UI.
-export WEBKIT_DISABLE_COMPOSITING_MODE=1
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
     exec dbus-run-session -- "$0"
 fi
+if ! xsetroot -solid '#17272c'; then
+    printf '%s\n' 'Could not set the Inkling2 desktop background.' >&2
+fi
 openbox &
 manager=$!
-tint2 -c /etc/inkling2/desktop/tint2rc &
+tint2 -c /etc/inkling2/desktop/menu-bar.tint2rc &
+tint2 -c /etc/inkling2/desktop/dock.tint2rc &
 inkling2-desktop-launch chat &
 # Keep the signed-in desktop available when the browser or another app closes.
 wait "$manager"
