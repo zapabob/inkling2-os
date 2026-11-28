@@ -342,7 +342,11 @@ fn handle_command(
         "sysinfo" => {
             write_line(
                 out,
-                &format!("OS Target   : Inkling2-OS v0.1.0 ({})", env::consts::OS),
+                &format!(
+                    "OS Target   : Inkling2-OS v{} ({})",
+                    env!("CARGO_PKG_VERSION"),
+                    env::consts::OS
+                ),
             );
             write_line(out, &format!("Engine Bin  : {}", cfg.engine_bin.display()));
             write_line(out, &format!("Models Root : {}", cfg.models_dir.display()));
@@ -517,9 +521,13 @@ fn cmd_cli_status(port: u16, out: &mut impl Write) {
 }
 
 fn main() -> ExitCode {
+    let args: Vec<String> = env::args().collect();
+    if args.len() == 2 && args[1] == "--version" {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     let cfg = ShellConfig::detect();
     let mut st = ShellState::load_or_new(&cfg);
-    let args: Vec<String> = env::args().collect();
     let mut stdout = io::stdout().lock();
 
     if args.len() >= 2 {
@@ -624,7 +632,11 @@ fn main() -> ExitCode {
 
     write_line(
         &mut stdout,
-        "Inkling2-OS AI-Native Shell v0.1.0 (CUDA 13.5 sm_120a + Memory45 + DynamicLoRA)",
+        concat!(
+            "Inkling2-OS AI-Native Shell v",
+            env!("CARGO_PKG_VERSION"),
+            " (CUDA 13.5 sm_120a + Memory45 + DynamicLoRA)"
+        ),
     );
     write_line(&mut stdout, "Type 'help' for commands.");
 

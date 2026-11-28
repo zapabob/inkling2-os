@@ -11,7 +11,7 @@ param(
     [switch]$SkipUsbCache,
     [string]$UsbWriteLog,
     [string]$UsbVerification,
-    [ValidatePattern('^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$')][string]$Tag = 'v0.1.1'
+    [ValidatePattern('^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$')][string]$Tag
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,8 +20,12 @@ $PSNativeCommandUseErrorActionPreference = $true
 
 $qualification = (Resolve-Path -LiteralPath $QualificationDir).Path
 $receipt = Get-Content -LiteralPath (Join-Path $qualification 'qualification.json') -Raw | ConvertFrom-Json
+$version = if ($receipt.version) { $receipt.version } else { '0.1.1' }
+if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid qualified release version.' }
+if (!$Tag) { $Tag = "v$version" }
 $osRepo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $engineSource = (Resolve-Path -LiteralPath $EngineRepo).Path
+# Upgrade the original installation in place so its shortcuts and per-user state still resolve.
 $installation = Join-Path $env:LOCALAPPDATA 'Inkling2-OS/v0.1.1/native/bin'
 $shell = Join-Path $installation 'inkling2-shell.exe'
 $engine = Join-Path $installation 'inkling2-engine.exe'
@@ -75,7 +79,7 @@ foreach ($asset in $receipt.assets) {
     if ((Get-FileHash -LiteralPath $path).Hash -ne $asset.sha256) { throw "Changed asset $($asset.file)." }
     $files[$asset.file] = $path
 }
-$consoleZip = $files['inkling2-os-v0.1.1-win64-console.zip']
+$consoleZip = $files["inkling2-os-v$version-win64-console.zip"]
 $engineZip = $files['inkling2-cuda-engine-win64-sm120a.zip']
 $iso = $files['inkling2-os-v0.1.1-x86_64-sm120.iso']
 if (-not $consoleZip -or -not $engineZip -or (-not $windowsOnly -and -not $iso)) { throw 'The paired release assets are incomplete.' }
@@ -169,7 +173,8 @@ if ($Stage -eq 'Install') {
 }
 
 if ($windowsOnly) {
-    if ($Tag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+-windows\.[0-9]+$' -or
+    $validTag = $Tag -eq "v$version" -or $Tag -match ('^v' + [regex]::Escape($version) + '-windows\.[0-9]+$')
+    if (-not $validTag -or
         (Get-FileHash -LiteralPath $shell).Hash -ne $receipt.binaries.shell -or
         (Get-FileHash -LiteralPath $engine).Hash -ne $receipt.binaries.engine -or
         (Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 3).service -ne 'inkling2-os-bridge') {

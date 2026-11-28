@@ -1,12 +1,21 @@
 [CmdletBinding()]
 param(
-    [string]$OutDir = (Join-Path $PSScriptRoot '../dist/v0.1.1'),
+    [string]$OutDir,
     [string]$BinaryDir = (Join-Path $PSScriptRoot '../target/release')
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$name = 'inkling2-os-v0.1.1-win64-console'
+$raw = cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc --manifest-path (Join-Path $repo 'Cargo.toml')
+if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata could not be read.' }
+$graph = $raw | ConvertFrom-Json
+$releaseVersion = ($graph.packages | Where-Object name -eq 'inkling2-shell').version
+$binaryVersion = & (Join-Path $BinaryDir 'inkling2-shell.exe') --version
+if ($LASTEXITCODE -ne 0 -or $releaseVersion -notmatch '^\d+\.\d+\.\d+$' -or $binaryVersion -ne $releaseVersion) {
+    throw 'The Windows shell version does not match the workspace.'
+}
+if (!$OutDir) { $OutDir = Join-Path $repo "dist/v$releaseVersion" }
+$name = "inkling2-os-v$releaseVersion-win64-console"
 $stage = Join-Path $OutDir ('stage-' + [IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Force -Path $OutDir, "$stage/bin", "$stage/scripts", "$stage/notices" | Out-Null
 Copy-Item -LiteralPath (Join-Path $BinaryDir 'inkling2-shell.exe') -Destination "$stage/bin"
@@ -23,9 +32,6 @@ foreach ($file in 'NOTICE.txt','LICENSE-APACHE-2.0.txt') {
     Copy-Item -LiteralPath (Join-Path $repo "crates/inkling2-shell/assets/sc117/$file") -Destination $tokenizerNotices.FullName
 }
 
-$raw = cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc --manifest-path (Join-Path $repo 'Cargo.toml')
-if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata could not be read.' }
-$graph = $raw | ConvertFrom-Json
 $included = @{}
 foreach ($node in $graph.resolve.nodes) { $included[$node.id] = $true }
 $components = foreach ($package in $graph.packages) {
@@ -61,7 +67,7 @@ $dependencies = foreach ($node in $graph.resolve.nodes) {
 $sbomFile = 'SBOM-win64.cdx.json'
 @{
     bomFormat='CycloneDX'; specVersion='1.5'; version=1
-    metadata=@{component=@{type='application'; name=$name; version='0.1.1'}}
+    metadata=@{component=@{type='application'; name=$name; version=$releaseVersion}}
     components=@($components)
     dependencies=@($dependencies)
 } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $stage $sbomFile) -Encoding utf8

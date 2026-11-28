@@ -83,6 +83,7 @@ function Connect-InklingDesktop {
     }
     $health = Invoke-RestMethod "$base/health" -NoProxy -TimeoutSec 3
     if ($health.service -ne 'inkling2-os-bridge') { throw 'Inkling2 に接続できませんでした。' }
+    if ($health.version) { $window.Title = "Inkling2 Desktop $($health.version)" }
 }
 
 function Update-InklingDesktop {

@@ -550,8 +550,7 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
             } else {
                 "preview"
             };
-            let health =
-                json!({"status": "ok", "service": "inkling2-os-bridge", "console_mode": mode});
+            let health = json!({"status": "ok", "service": "inkling2-os-bridge", "console_mode": mode, "version": env!("CARGO_PKG_VERSION")});
             send_json(&mut stream, "200 OK", &health.to_string());
         }
         ("GET", "/v1/models") => {

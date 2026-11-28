@@ -98,6 +98,10 @@ try {
     }
     & (Join-Path $PSScriptRoot 'package-windows-console.ps1') -OutDir $assets -BinaryDir (Join-Path $osBuild 'release')
     $engineBinary = Join-Path $windowsBuild 'inkling2-engine.exe'
+    $version = & (Join-Path $osBuild 'release/inkling2-shell.exe') --version
+    if ($version -notmatch '^\d+\.\d+\.\d+$' -or (& $engineBinary --version) -ne $version) {
+        throw 'The qualified shell and engine report different release versions.'
+    }
     $runtime = (Resolve-Path -LiteralPath (Join-Path $cuda 'bin/cudart64_13.dll')).Path
     $engineArchive = Join-Path $assets 'inkling2-cuda-engine-win64-sm120a.zip'
     Compress-Archive -LiteralPath $engineBinary,$runtime,(Join-Path $windowsBuild 'libzstd.dll'),(Join-Path $windowsBuild 'LICENSE-zstd.txt'),(Join-Path $engineSource 'LICENSE'),(Join-Path $engineSource 'README.md') -DestinationPath $engineArchive
@@ -108,7 +112,7 @@ try {
         Where-Object Extension -In '.iso','.zip','.txt','.spdx','.json','.tsv' |
         Sort-Object Name | ForEach-Object { @{ file = $_.Name; sha256 = (Get-FileHash -LiteralPath $_.FullName).Hash } }
     @{
-        schema = 1; generated_utc = [DateTime]::UtcNow.ToString('o')
+        schema = 1; version = $version; generated_utc = [DateTime]::UtcNow.ToString('o')
         sources = @{ engine = $engineDigest; os = $osDigest }
         binaries = @{ engine = (Get-FileHash -LiteralPath $engineBinary).Hash
                        shell = (Get-FileHash -LiteralPath (Join-Path $osBuild 'release/inkling2-shell.exe')).Hash }

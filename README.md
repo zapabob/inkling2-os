@@ -1,19 +1,12 @@
-# Inkling2-OS
+# Inkling2 Desktop 1.1.0 for Windows
 
-Inkling2-OS opens a local AI desktop at sign-in. On Windows, use it to talk to Inkling2, open installed apps and settings, read documents and browse the web. On the private Linux appliance, the graphical session and inference service start at boot. Both use the SC117 Inkling-2-Mini models through the [native CUDA engine](https://github.com/zapabob/inkling2-cuda-engine). A local Strata client can share the key-free loopback API.
+Open **Inkling2 Desktop** to chat with a local SC117 model, read a document, browse the web or open Windows apps and settings. Hermes Agent and Strata can use the same native CUDA worker at `http://127.0.0.1:18083/v1`. The Windows desktop runs directly on the PC and can open at sign-in.
+
+Download both [Inkling2-OS for Windows](https://github.com/zapabob/inkling2-os/releases/tag/v1.1.0) and the [matching CUDA engine](https://github.com/zapabob/inkling2-cuda-engine/releases/tag/v1.1.0). Each release includes SHA-256 checksums. Supply your original SC117 SQ-10, SQ-15 or SQ-20 `.strata` weights. The desktop includes their tokenizer. For the public Linux diagnostic image, see the [Linux release](https://github.com/zapabob/inkling2-os/releases/tag/v0.1.1-linux.1).
 
 ![Inkling2 Desktop on Windows and the 131,072-token context setting. The SQ-10 hardware check used a short reference prompt.](docs/media/inkling2-desktop-131k.png)
 
-**Try the 131K window.** In **Inkling2 Desktop → Inkling2 に話す**, set **Context** to **131,072 tokens**. The window includes conversation history, chat-template tokens and room for the reply. Use the matching OS and engine revisions. The [Windows releases](https://github.com/zapabob/inkling2-os/releases) list the published binaries for each revision.
-
-| Status | Capability |
-| --- | --- |
-| Implemented | Loopback console, optional scoped credentials, read-only document previews, public HTTPS document browsing, RustXNG search and measured-GPU admission. |
-| Prior Windows release | The console, key-free browser, Finder, scoped API and Strata 0.8.6 provider registration were exercised. SQ-10, SQ-15 and SQ-20 returned the expected digit and stopped on the short arithmetic fixture. |
-| Experimental | The OpenAI-compatible event stream emits the answer once native generation finishes. |
-| 131K test coverage | CUDA boundary and ring-wrap tests passed. A Windows SQ-10 worker configured for 131,072 tokens returned the reference answer on short prompts. Full-length document quality and throughput require a separate end-to-end evaluation. Each Windows release requires the three-model checks below. |
-| Pending qualification | Physical Linux CUDA inference and matched hardware benchmarks. |
-| Private Linux USB | UEFI installation with the Linux CUDA engine, NVIDIA modules, a local graphical console and an offline model volume. See the validation record for the checks run on this image. |
+In **Inkling2 Desktop → Inkling2 に話す**, choose **Context → 131,072 tokens** for the largest window. This includes conversation history, formatting tokens and the space reserved for the reply. The Windows qualification checks short reference answers on all three models with this setting. Full-window document recall and throughput remain unmeasured.
 
 ## Windows console
 
@@ -32,6 +25,10 @@ own SC117 weights. The bridge includes the publisher's tokenizer for SQ-10, SQ-1
 ./scripts/start-windows-desktop.ps1 -ModelsDir 'C:/Models/SC117' -RegisterAtLogon
 ./scripts/start-windows-desktop.ps1 -ModelsDir 'C:/Models/SC117'
 ```
+
+Check the running version with `(Invoke-RestMethod http://127.0.0.1:18083/health).version`. In the extracted directory, `./bin/inkling2-shell.exe --version` and `./bin/inkling2-engine.exe --version` should both print `1.1.0`.
+
+For an existing installation made with the qualification script, follow [Publishing a Windows pair](#publishing-a-windows-pair). Its install step saves the current binaries, replaces them in the original directory, and verifies the installed pair. Existing weights, per-user state and shortcuts keep their paths.
 
 The current user's Start menu and Startup folder receive an **Inkling2 Desktop** shortcut.
 The desktop opens applications, documents, Web search, Tor Browser, Windows Settings and
@@ -101,7 +98,7 @@ Invoke-RestMethod http://127.0.0.1:18083/v1/engine/status
 ./scripts/promote-native-pair.ps1 @promotion -Stage Publish -Tag $newWindowsTag
 ```
 
-Set `$newWindowsTag` to a new Windows tag with the next available numeric suffix. Installation saves the
+Set `$newWindowsTag` to the version printed by both executables prefixed with `v` (for this release, `v1.1.0`). Installation saves the
 previous binaries in the qualification directory. Verify a real chat reply and the desktop
 before publication. Publication checks both remote main revisions, all three successful
 workflow runs on those revisions, and the installed executable hashes.
