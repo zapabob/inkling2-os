@@ -117,8 +117,13 @@ if ($Resident) {
 }
 if ($SkipUsbCache) { $settings.INKLING2_EXPERT_USB_DIR = $null }
 $strataModels = Join-Path $env:LOCALAPPDATA 'Strata/model-weights/SC117/Inkling-2-Mini'
-if (-not $AdditionalModelsDirs -and (Test-Path -LiteralPath $strataModels -PathType Container)) {
-    $AdditionalModelsDirs = @($strataModels)
+if (-not $AdditionalModelsDirs) {
+    $registered = [Environment]::GetEnvironmentVariable('INKLING2_ADDITIONAL_MODEL_DIRS', 'User')
+    $AdditionalModelsDirs = @(@($strataModels) + @(
+        foreach ($list in $env:INKLING2_ADDITIONAL_MODEL_DIRS, $registered) {
+            if ($list) { $list.Split([IO.Path]::PathSeparator, [StringSplitOptions]::RemoveEmptyEntries) }
+        }
+    ) | Where-Object { [IO.Path]::IsPathFullyQualified($_) -and (Test-Path -LiteralPath $_ -PathType Container) } | Select-Object -Unique)
 }
 if ($AdditionalModelsDirs) {
     $settings.INKLING2_ADDITIONAL_MODEL_DIRS = ($AdditionalModelsDirs | ForEach-Object {

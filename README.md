@@ -23,6 +23,8 @@ See the [NEON architecture](docs/NEON_ARCHITECTURE.md), [Hermes API and examples
 
 ## Windows console
 
+The desktop also recognises the 16 KiB SQv2 layout used by [Kujira’s CHiPS SQ-20 pack](https://huggingface.co/Kujira/Inkling-2-Mini-Strata-CHiPS-Abliterated). Keep the downloaded `.strata` in place. Pass its directory through `-AdditionalModelsDirs` on `start-windows-console.ps1`, or add the directory to the per-user `INKLING2_ADDITIONAL_MODEL_DIRS` environment variable for desktop launches (separate Windows paths with semicolons). Restart the console and select `Inkling-2-Mini-SQv2-20-CHiPS` from the model menu. The same ID is returned by `/v1/models` and accepted by `/v1/chat/completions`. The pack supplies its chat template and can use the embedded SC117 tokenizer.
+
 Use an RTX 5060 Ti 16 GB or a compatible Blackwell `sm_120a` system with a CUDA 13.5-capable driver, PowerShell 7.4 or newer and original SC117 SQ-10, SQ-15 or SQ-20 `.strata` weights. The desktop embeds the SC117 tokenizer and reads the chat template from the model. The two Windows archives include the shell, CUDA executable and its runtime libraries. Supply the weights separately.
 
 1. Compare each downloaded ZIP to the SHA-256 file in its own release. Extract the desktop ZIP into an empty directory and the engine ZIP into its `bin` subdirectory.

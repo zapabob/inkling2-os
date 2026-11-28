@@ -581,6 +581,7 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                 );
                 items.push(json!({"id":id, "object":"model", "owned_by":"SC117-Inkling2-OS",
                     "context_length": manifest.as_ref().map(crate::native_prompt::manifest_limit), "bytes":m.file_bytes,
+                    "page_alignment_bytes":m.page_size,
                     "default_output_tokens":limits.default, "max_output_tokens":limits.max}).to_string());
             }
             let json = format!(r#"{{"object":"list","data":[{}]}}"#, items.join(","));
