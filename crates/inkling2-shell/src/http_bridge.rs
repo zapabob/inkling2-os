@@ -191,13 +191,20 @@ fn completion_json(model: &str, reply: native_inference::NativeReply) -> Value {
 
 // Close-delimited JSON accepts leading whitespace. A heartbeat keeps desktop fetch
 // alive during long native prefill, without inserting bytes into the model output.
-fn start_desktop_body(
+fn start_keepalive_body(
     stream: &mut TcpStream,
+    streaming: bool,
 ) -> std::io::Result<(std::sync::mpsc::Sender<()>, thread::JoinHandle<()>)> {
     let mut socket = stream.try_clone()?;
+    let mime = if streaming {
+        "text/event-stream"
+    } else {
+        "application/json"
+    };
+    let heartbeat: &[u8] = if streaming { b": prefill\n\n" } else { b"\n" };
     write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n{SECURITY_HEADERS}Connection: close\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nCache-Control: no-store\r\n{SECURITY_HEADERS}Connection: close\r\n\r\n"
     )?;
     let (stop, rx) = std::sync::mpsc::channel();
     let writer = thread::spawn(move || {
@@ -205,7 +212,7 @@ fn start_desktop_body(
             rx.recv_timeout(Duration::from_secs(15)),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         ) {
-            if socket.write_all(b"\n").is_err() {
+            if socket.write_all(heartbeat).is_err() {
                 break;
             }
         }
@@ -213,7 +220,7 @@ fn start_desktop_body(
     Ok((stop, writer))
 }
 
-fn send_sse_completion(stream: &mut TcpStream, model: &str, reply: &native_inference::NativeReply) {
+fn sse_completion(model: &str, reply: &native_inference::NativeReply) -> String {
     let mut delta = reply.message.clone();
     if let Some(calls) = delta.get_mut("tool_calls").and_then(Value::as_array_mut) {
         for (i, call) in calls.iter_mut().enumerate() {
@@ -228,7 +235,11 @@ fn send_sse_completion(stream: &mut TcpStream, model: &str, reply: &native_infer
         json_escape(model),
         reply.finish
     );
-    let payload = format!("{chunk1}{chunk2}data: [DONE]\n\n");
+    format!("{chunk1}{chunk2}data: [DONE]\n\n")
+}
+
+fn send_sse_completion(stream: &mut TcpStream, model: &str, reply: &native_inference::NativeReply) {
+    let payload = sse_completion(model, reply);
     let resp = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\n{SECURITY_HEADERS}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
         payload.len()
@@ -562,8 +573,13 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("inkling-2-mini");
+                let manifest = crate::native_prompt::load_manifest(&m);
+                let limits = native_inference::OutputLimits::for_build(
+                    manifest.as_ref().and_then(|v| v["build"].as_str()),
+                );
                 items.push(json!({"id":id, "object":"model", "owned_by":"SC117-Inkling2-OS",
-                    "context_length": crate::native_prompt::model_context_limit(&m), "bytes":m.file_bytes}).to_string());
+                    "context_length": manifest.as_ref().map(crate::native_prompt::manifest_limit), "bytes":m.file_bytes,
+                    "default_output_tokens":limits.default, "max_output_tokens":limits.max}).to_string());
             }
             let json = format!(r#"{{"object":"list","data":[{}]}}"#, items.join(","));
             send_json(&mut stream, "200 OK", &json);
@@ -974,9 +990,14 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                 return;
             };
             let mut desktop_body = None;
-            let result = native_inference::prompt_and_limit(&body).and_then(|(messages, max)| {
+            let result = (|| {
+                let manifest = crate::native_prompt::load_manifest(&model)
+                    .ok_or(("503 Service Unavailable", "model manifest unavailable"))?;
+                let limits = native_inference::OutputLimits::for_build(manifest["build"].as_str());
+                let (messages, max) = native_inference::prompt_and_limit(&body, limits)?;
                 let tools = crate::native_tools::Tools::from_request(&body)?;
-                let prompt = crate::native_prompt::prepare(&model, messages, max, tools)?;
+                let prompt =
+                    crate::native_prompt::prepare(&model, &manifest, messages, max, tools)?;
                 let mut capacity = native_inference::context_capacity(
                     &body,
                     prompt.input_ids.len() + max as usize,
@@ -988,19 +1009,18 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                     ));
                 }
                 capacity = capacity.min(prompt.model_limit);
-                if !streaming
-                    && body["desktop_keepalive"].as_bool() == Some(true)
-                    && prompt.input_ids.len() > 512
-                {
-                    desktop_body =
-                        Some(start_desktop_body(&mut stream).map_err(|_| {
-                            ("503 Service Unavailable", "desktop connection closed")
-                        })?);
-                }
                 if ctx.resident {
                     ensure_resident(ctx, &mut slot, &model, capacity)?;
                 } else {
                     native_inference::admit_model(model.trunk_bytes, read_free_vram(), capacity)?;
+                }
+                if prompt.input_ids.len() > 512
+                    && (streaming || body["desktop_keepalive"].as_bool() == Some(true))
+                {
+                    desktop_body =
+                        Some(start_keepalive_body(&mut stream, streaming).map_err(|_| {
+                            ("503 Service Unavailable", "client connection closed")
+                        })?);
                 }
                 let result = native_inference::generate(
                     &ctx.engine_bin,
@@ -1017,10 +1037,21 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                     slot.take();
                 }
                 result
-            });
+            })();
             if let Some((stop, writer)) = desktop_body {
                 drop(stop);
                 let _ = writer.join();
+                if streaming {
+                    let payload = match result {
+                        Ok(reply) => sse_completion(model_id, &reply),
+                        Err((status, message)) => {
+                            let event = json!({"error":{"code":status,"message":message}});
+                            format!("data: {event}\n\ndata: [DONE]\n\n")
+                        }
+                    };
+                    let _ = stream.write_all(payload.as_bytes());
+                    return;
+                }
                 let value = match result {
                     Ok(reply) => completion_json(model_id, reply),
                     Err((status, message)) => json!({"status":status,"error":message}),

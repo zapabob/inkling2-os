@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.0 for Windows
+
+SC117 models advertise a default of 512 and a maximum of 1,024 output tokens. The bridge sends keepalives during long prefill. The resident desktop applies the SQ-15 cache profile and uses the matching 1.2.0 CUDA engine.
+
 ## 1.1.0 for Windows
 
 Inkling2 Desktop and the CUDA engine now share a release version. Both executables report it with `--version`. The Windows bridge also reports it at `/health`. This release includes the SC117 tokenizer, up to 131,072 tokens of context and native function selection for local Hermes Agent conversations.

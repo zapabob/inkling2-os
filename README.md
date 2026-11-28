@@ -1,118 +1,60 @@
-# Inkling2 Desktop 1.1.0 for Windows
+# Inkling2 Desktop 1.2.0
 
-Open **Inkling2 Desktop** to chat with a local SC117 model, read a document, browse the web or open Windows apps and settings. Hermes Agent and Strata can use the same native CUDA worker at `http://127.0.0.1:18083/v1`. The Windows desktop runs directly on the PC and can open at sign-in.
+Inkling2 Desktop runs SC117 Inkling-2-Mini on your own Windows GPU. Its desktop opens local chat, documents, web search and Windows applications. Hermes Agent and Strata can share the same resident model through the loopback Chat Completions API.
 
-Download both [Inkling2-OS for Windows](https://github.com/zapabob/inkling2-os/releases/tag/v1.1.0) and the [matching CUDA engine](https://github.com/zapabob/inkling2-cuda-engine/releases/tag/v1.1.0). Each release includes SHA-256 checksums. Supply your original SC117 SQ-10, SQ-15 or SQ-20 `.strata` weights. The desktop includes their tokenizer. The public Linux diagnostic ISO is available from the [Linux releases](https://github.com/zapabob/inkling2-os/releases?q=linux).
+[Download the Windows desktop](https://github.com/zapabob/inkling2-os/releases/tag/v1.2.0) · [Download the matching CUDA engine](https://github.com/zapabob/inkling2-cuda-engine/releases/tag/v1.2.0) · [Linux diagnostic releases](https://github.com/zapabob/inkling2-os/releases?q=linux)
 
-![Inkling2 Desktop on Windows and the 131,072-token context setting. The SQ-10 hardware check used a short reference prompt.](docs/media/inkling2-desktop-131k.png)
-
-In **Inkling2 Desktop → Inkling2 に話す**, choose **Context → 131,072 tokens** for the largest window. This includes conversation history, formatting tokens and the space reserved for the reply. The Windows qualification checks short reference answers on all three models with this setting. Full-window document recall and throughput remain unmeasured.
+![Inkling2 Desktop with the model and context selectors](docs/media/inkling2-desktop-131k.png)
 
 ## Windows console
 
-### Resident desktop on Windows
+Use an RTX 5060 Ti 16 GB or a compatible Blackwell `sm_120a` system with a CUDA 13.5-capable driver, PowerShell 7.4 or newer and original SC117 SQ-10, SQ-15 or SQ-20 `.strata` weights. The desktop embeds the SC117 tokenizer and reads the chat template from the model. The two Windows archives include the shell, CUDA executable and its runtime libraries. Supply the weights separately.
 
-**Context → Auto** sizes the resident worker for the tokenized conversation. Native chat requests can also specify `"context_length": 131072`. Each successful reply and its user message stay in this tab until you start a new conversation or switch models. The output setting reserves up to 128 tokens inside the selected window.
-
-The HTTP model list advertises the native context limit. `GET /v1/engine/status` reports the current resident capacity and worker PID. Increasing capacity can reload the model. The bridge checks measured GPU headroom before loading. Long prompts are processed locally and can take substantially longer than short chats.
-
-Extract the Windows console archive into an empty directory, then extract the matching
-engine archive into its `bin` directory. With PowerShell 7.4 or newer, run the desktop
-launcher from the extracted directory. Replace the example model directory with your
-own SC117 weights. The bridge includes the publisher's tokenizer for SQ-10, SQ-15 and SQ-20.
+1. Compare each downloaded ZIP to the SHA-256 file in its own release. Extract the desktop ZIP into an empty directory and the engine ZIP into its `bin` subdirectory.
+2. From the desktop directory, check both versions. Then open the desktop using your model directory.
 
 ```powershell
-./scripts/start-windows-desktop.ps1 -ModelsDir 'C:/Models/SC117' -RegisterAtLogon
+./bin/inkling2-shell.exe --version
+./bin/inkling2-engine.exe --version
 ./scripts/start-windows-desktop.ps1 -ModelsDir 'C:/Models/SC117'
 ```
 
-Check the running version with `(Invoke-RestMethod http://127.0.0.1:18083/health).version`. In the extracted directory, `./bin/inkling2-shell.exe --version` and `./bin/inkling2-engine.exe --version` should both print `1.1.0`.
+Both commands should print `1.2.0`. To create the Start menu and sign-in shortcuts, run the same desktop command with `-RegisterAtLogon`. Add `-SkipUsbCache` to keep a removable drive available for other work. An existing qualified installation can be upgraded in place using the install stage below.
 
-For an existing installation made with the qualification script, follow [Publishing a Windows pair](#publishing-a-windows-pair). Its install step saves the current binaries, replaces them in the original directory, and verifies the installed pair. Existing weights, per-user state and shortcuts keep their paths.
+## Chat, files and web
 
-The current user's Start menu and Startup folder receive an **Inkling2 Desktop** shortcut.
-The desktop opens applications, documents, Web search, Tor Browser, Windows Settings and
-Task Manager. Install the signed Windows x86-64 package from the [Tor Project](https://www.torproject.org/download/)
-in `%LOCALAPPDATA%/Programs/Tor Browser` to enable its native launcher. Choose Connect
-in Tor Browser on first use. The HTTPS reader rejects onion addresses before DNS resolution.
-The Tor package is distributed separately.
-The loopback bridge stays available after the window closes. On port 18083, Strata can use
-`http://127.0.0.1:18083/v1` without a key. To disable automatic launch, remove the
-**Inkling2 Desktop** shortcut from `shell:startup`.
+Open **Inkling2 に話す**, select a model and send a message. **Context → Auto** selects a worker capacity for the conversation. **131,072 tokens** includes the prompt, history and reserved reply. The three SC117 tiers default to 512 output tokens and accept up to 1,024, within that context. The hardware qualification uses short prompts at the maximum capacity. Full-window recall and throughput are separate measurements.
 
-The default preload model is `Inkling-2-Mini-SQ-15-abliterated`. Select another ID with
-`-PreloadModel`. The worker retains one model, resets each conversation's sequence state
-and releases the previous model when switching. `GET /v1/engine/status` reports the live
-worker state. `POST /v1/engine/unload` with an empty JSON object frees an idle worker.
-The desktop's initial expert cache caps are 2 GiB VRAM and 512 MiB pinned RAM.
-Add `-SkipUsbCache` when the removable drive is in use by the Linux installer.
+Finder previews files inside the configured directory. The HTTPS reader fetches public pages and removes scripts. For web search, build the pinned RustXNG v0.32.0 revision from the [GitLab mirror](https://gitlab.com/sahenjp/rustxng-mirror) and run `./scripts/start-rustxng-full.ps1 -Binary 'C:/Tools/rustxng.exe'`. The launcher validates the full search profile and accepts a local configuration through `-Config`. Search queries go to enabled providers. The native Tor launcher opens the signed [Tor Browser](https://www.torproject.org/download/) installed under `%LOCALAPPDATA%/Programs/Tor Browser`.
 
-Build with `cargo build --release --locked --workspace -j 1`. From a Windows bundle, the launcher selects the packaged executable automatically. In PowerShell 7.4 or later, run:
+## Hermes and Strata
+
+Choose a custom Chat Completions provider with base URL `http://127.0.0.1:18083/v1`. Select the exact model ID from `GET /v1/models`, for example `Inkling-2-Mini-SQ-15-abliterated`. The key-free desktop listens on loopback. Set reasoning off for the native adapter. For a shared machine or forwarded port, the console launcher supports `-UseTokens` and `-CopyToken Inference`.
+
+The model list advertises context and output limits. Each tool turn can select one declared function. Hermes validates and executes it under its own permissions and sends the result back with its call ID. During longer input processing the streaming endpoint sends keepalives, then delivers the completed response as buffered events.
+
+The desktop preloads SQ-15 by default. One model stays resident, with sequence state reset between requests. The SQ-15 desktop profile caps expert placement at 6,144 MiB VRAM and 2,048 MiB pinned RAM and uses the Windows file cache for remaining expert reads. Actual allocations depend on available memory. Other tiers retain the 2,048/512 MiB desktop caps. The launcher discovers installed Strata weights and can also use `-AdditionalModelsDirs`. The [engine README](https://github.com/zapabob/inkling2-cuda-engine/blob/v1.2.0/README.md) lists cache controls.
 
 ```powershell
-./scripts/start-windows-console.ps1 -EnginePath 'C:/Models/bin/inkling2-engine.exe' -ModelsDir 'H:/Models/SC117-SQ-10' -PreviewDir ./docs -Open
-```
-
-The default address is `http://127.0.0.1:18081/`. The launcher defaults to key-free local mode. Use `-UseTokens` on shared Windows machines or when forwarding the port. In that mode, `-CopyToken Console` copies the console credential for **Unlock**.
-
-In Strata, add a custom OpenAI Chat Completions connection with base URL `http://127.0.0.1:18081/v1` and use the exact model ID returned by `GET /v1/models`. Local mode does not require an API key. When the launcher uses `-UseTokens`, configure the **Inference** token.
-
-Use the CUDA executable that supports `generate-token-ids`. The shell reads the matching model chat template and tokenizer, and the engine accepts the resulting token IDs. Select no reasoning for the native adapter.
-
-### Using Hermes Agent
-
-With the desktop running, choose a custom Chat Completions provider in Hermes. Set its base URL to `http://127.0.0.1:18083/v1` and select an ID from `GET /v1/models`, for example `Inkling-2-Mini-SQ-15-abliterated`. The local connection is key-free. Configure the model context as 131,072, maximum output as 128 tokens per turn and reasoning as off.
-
-Hermes sends its function declarations with the conversation. The bridge renders them with the model's own template, decodes one declared function call per assistant turn and returns its name, JSON arguments and call ID. Hermes executes the function under its configured permissions and sends the tool result back with that ID. Both ordinary JSON and buffered streaming responses support this exchange.
-
-### SQ-15 and SQ-20 on Windows
-
-The launcher also scans the installed Strata folder under `%LOCALAPPDATA%/Strata/model-weights/SC117/Inkling-2-Mini`. You can add other model folders with `-AdditionalModelsDirs`. The bridge uses a tokenizer supplied by the model manifest or model folder when present, and otherwise uses its embedded SC117 tokenizer. On this workstation the launcher detects the NVMe, SATA SSD and removable USB by their Windows storage bus. The engine keeps priority experts in VRAM and CPU RAM, then caches cold experts in temporary files of up to 256 MiB per drive. It leaves 2 GiB free per volume and uses the original weights when a cache is unavailable. The installed Start menu entry opens the local GUI.
-
-### Publishing a Windows pair
-
-In the x64 Visual Studio Developer PowerShell, set `$engine` to the CUDA engine checkout,
-`$sq10`, `$sq15` and `$sq20` to the original model files, and `$qualification` to a new
-output directory. The original SC117 weights can be qualified in directories containing only the model files.
-
-```powershell
-./scripts/qualify-native-pair.ps1 -WindowsOnly -EngineRepo $engine -Model $sq10 -AdditionalModel @($sq15, $sq20) -CudaRoot $env:CUDA_PATH -OutputDir $qualification
-```
-
-Push each tested source change to its repository's `main`. The engine push builds the CUDA runtime, checks the token protocol and stages the source.
-The OS push runs both Rust workspace jobs and the boot tests. Start the OS packaging
-workflow on the same main revision and check the resulting run:
-
-```powershell
-gh workflow run release.yml --repo zapabob/inkling2-os --ref main
-gh run list --repo zapabob/inkling2-os --branch main --commit (git rev-parse HEAD)
-gh run list --repo zapabob/inkling2-cuda-engine --branch main --commit (git -C $engine rev-parse HEAD)
-```
-
-The three-model hardware run must complete before installing or publishing. Its receipt binds the source, model files, ZIP archives and binaries to SHA-256 digests. Requalify after changing packaged source.
-
-```powershell
-$promotion = @{ QualificationDir = $qualification; EngineRepo = $engine; Port = 18083 }
-./scripts/promote-native-pair.ps1 @promotion -Stage Install -ModelPath $sq10 -Resident -SkipUsbCache
+Invoke-RestMethod http://127.0.0.1:18083/health
 Invoke-RestMethod http://127.0.0.1:18083/v1/engine/status
-./scripts/promote-native-pair.ps1 @promotion -Stage Publish -Tag $newWindowsTag
 ```
 
-Set `$newWindowsTag` to the version printed by both executables prefixed with `v` (for this release, `v1.1.0`). Installation saves the
-previous binaries in the qualification directory. Verify a real chat reply and the desktop
-before publication. Publication checks both remote main revisions, all three successful
-workflow runs on those revisions, and the installed executable hashes.
+The standalone web console starts on port 18081 with `./scripts/start-windows-console.ps1 -ModelsDir 'C:/Models/SC117' -PreviewDir ./docs -Open`. To unload an idle desktop worker, POST an empty JSON object to `/v1/engine/unload`.
 
-### Web search
+## Publishing a Windows pair
 
-The image builds RustXNG v0.32.0 from the pinned [GitLab mirror](https://gitlab.com/sahenjp/rustxng-mirror). On Windows, build that pinned revision with `cargo build --locked --release --no-default-features --bin rustxng` and run the resulting executable through the launcher:
+Build the Rust workspace with `cargo build --release --locked --workspace`. To qualify an upgrade, run the following in an x64 Visual Studio Developer PowerShell with the CUDA 13.5 toolkit. Set the variables to the engine checkout, three original model paths and a new qualification directory.
 
 ```powershell
-./scripts/start-rustxng-full.ps1 -Binary 'C:/Tools/rustxng.exe'
-./scripts/start-windows-console.ps1 -RustXngPort 29483 -PreviewDir ./docs -Open
+./scripts/qualify-native-pair.ps1 -WindowsOnly -EngineRepo $engine -Model $sq10 -AdditionalModel @($sq15,$sq20) -CudaRoot $env:CUDA_PATH -OutputDir $qualification
+$pair = @{ QualificationDir = $qualification; EngineRepo = $engine; Port = 18083 }
+./scripts/promote-native-pair.ps1 @pair -Stage Install -ModelPath $sq10 -Resident -SkipUsbCache
 ```
 
-The launcher validates the upstream `full` profile before starting it. Pass `-Config` for a local RustXNG TOML or YAML override. The appliance reads an optional root-managed `/etc/inkling2/rustxng.toml` and otherwise uses the bundled profile. Enabled web providers receive the search query. Providers that require credentials are available only when explicitly configured. Database engine extensions are omitted from the appliance build.
+Qualification tests CUDA, the tokenizer, one-shot generation and 131,072-context resident generation on all three weights. The receipt binds the sources, binaries and archives by SHA-256. Installation keeps rollback copies and preserves the original directory and desktop shortcuts. Verify the versions, installed chat reply and resident state.
+
+Push the qualified revisions to both main branches and dispatch the OS `release.yml` workflow on main. After OS validation, OS staging and engine CI pass on those revisions, publish with `./scripts/promote-native-pair.ps1 @pair -Stage Publish -Tag v1.2.0`. Each repository publishes checksums for its own assets.
 
 ## Linux diagnostic ISO
 
@@ -134,14 +76,4 @@ The private appliance enables resident inference. When the GPU and bundled SQ-10
 
 Both Linux images include Wine for 64-bit Windows command-line programs. At the physical console use Ctrl+Alt+F2 to open the unprivileged Inkling2 terminal. Stage approved executables in `/var/lib/inkling2/wine-apps`, then run `wine-inkling2 run PROGRAM.exe` from the terminal. Wine uses a separate display, an isolated network namespace and its own prefix. The installed disk persists the prefix and service state in `/var/lib/inkling2`.
 
-## Paired qualification and release
-
-Run `scripts/qualify-native-pair.ps1` from the x64 Visual Studio Developer PowerShell with the engine checkout, original SQ-10 model, CUDA 13.5 toolkit and an ignored output directory. The gate runs the Rust workspace and tokenizer suites, the CUDA tests and real SQ-10 reference check, then the BIOS, UEFI and installed-disk boot tests. It writes a qualification receipt only after a successful run. The receipt binds both source trees and the packaged assets to checksums.
-
-Publish from the qualified main revisions after their CI and staging workflows pass. `scripts/promote-native-pair.ps1 -Stage Install` checks the qualified source and the archive hashes, replaces the local Windows console binaries, and keeps rollback copies. For the dedicated USB, `scripts/prepare-private-usb.ps1` builds and boots the private disk bundle in QEMU. Pass its verification hashes and original model path to `scripts/write-installed-usb.ps1`. `scripts/promote-native-pair.ps1 -Stage Publish` checks the installed Windows binaries and the verified USB write log before publishing the paired releases. The public ISO supports diagnostics. The private USB carries its own CUDA and model assets.
-
-Read the [architecture](docs/ARCHITECTURE.md), [boot process](docs/BOOT_PROCESS.md), [security model](docs/SECURITY.md), [hardware support](docs/HARDWARE_COMPATIBILITY.md), [limitations](docs/KNOWN_LIMITATIONS.md) and [validation record](docs/V0.1.1_VALIDATION.md).
-
-## Licence
-
-Distributed under the MIT Licence. The [standalone Inkling2 CUDA Engine](https://github.com/zapabob/inkling2-cuda-engine) is a separate project.
+See the [architecture](docs/ARCHITECTURE.md), [boot process](docs/BOOT_PROCESS.md), [security model](docs/SECURITY.md) and [hardware support](docs/HARDWARE_COMPATIBILITY.md). Distributed under the [MIT licence](LICENSE).

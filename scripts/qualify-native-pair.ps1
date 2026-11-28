@@ -90,7 +90,7 @@ try {
     if (-not $WindowsOnly) {
         $container = docker create $bootImage
         try {
-            docker cp "${container}:/out/inkling2-os-v1.1.0-x86_64-sm120.iso" $assets
+            docker cp "${container}:/out/inkling2-os-v1.2.0-x86_64-sm120.iso" $assets
             docker cp "${container}:/out/linux-rootfs-packages.tsv" $assets
         } finally {
             docker rm $container | Out-Null

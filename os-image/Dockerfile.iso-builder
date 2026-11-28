@@ -127,8 +127,8 @@ RUN set -eu; mkdir -p /out /iso/casper; \
     cp "/boot/initrd.img-$version" /iso/boot/initramfs.img; \
     mkdir -p /rootfs/lib/modules; cp -a "/lib/modules/$version" /rootfs/lib/modules/; \
     mksquashfs /rootfs /iso/casper/filesystem.squashfs -comp zstd -noappend -processors 2; \
-    grub-mkrescue -o /out/inkling2-os-v1.1.0-x86_64-sm120.iso /iso; \
-    xorriso -indev /out/inkling2-os-v1.1.0-x86_64-sm120.iso -report_el_torito plain; \
+    grub-mkrescue -o /out/inkling2-os-v1.2.0-x86_64-sm120.iso /iso; \
+    xorriso -indev /out/inkling2-os-v1.2.0-x86_64-sm120.iso -report_el_torito plain; \
     dpkg-query --admindir=/rootfs/var/lib/dpkg -W -f='${Package}\t${Version}\n' > /out/linux-rootfs-packages.tsv; \
     dpkg-query -W -f='${Package}\t${Version}\n' "$KERNEL_PACKAGE" "linux-modules-$version" >> /out/linux-rootfs-packages.tsv
 

@@ -104,6 +104,13 @@ $settings = @{
 }
 if ($Resident) {
     $settings.INKLING2_RESIDENT = '1'
+    if (-not $env:INKLING2_EXPERT_VRAM_MIB -and -not $env:INKLING2_SQ15_EXPERT_VRAM_MIB) {
+        $settings.INKLING2_SQ15_EXPERT_VRAM_MIB = '6144'
+    }
+    if (-not $env:INKLING2_EXPERT_RAM_MIB -and -not $env:INKLING2_SQ15_EXPERT_RAM_MIB) {
+        $settings.INKLING2_SQ15_EXPERT_RAM_MIB = '2048'
+    }
+    if (-not $env:INKLING2_SQ15_CACHED_READS) { $settings.INKLING2_SQ15_CACHED_READS = '1' }
     if ($PreloadModel) { $settings.INKLING2_PRELOAD_MODEL = $PreloadModel }
     if (-not $env:INKLING2_EXPERT_VRAM_MIB) { $settings.INKLING2_EXPERT_VRAM_MIB = '2048' }
     if (-not $env:INKLING2_EXPERT_RAM_MIB) { $settings.INKLING2_EXPERT_RAM_MIB = '512' }

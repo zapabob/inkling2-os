@@ -13,8 +13,26 @@ use serde_json::Value;
 use crate::native_prompt::{self, NativePrompt};
 use crate::strata_catalog::StrataModelInfo;
 
-pub const MAX_OUTPUT_TOKENS: u64 = 128;
-const DEFAULT_OUTPUT_TOKENS: u64 = 32;
+#[derive(Clone, Copy)]
+pub struct OutputLimits {
+    pub default: u64,
+    pub max: u64,
+}
+
+impl OutputLimits {
+    pub fn for_build(build: Option<&str>) -> Self {
+        match build {
+            Some("SQ-10" | "SQ-15" | "SQ-20") => Self {
+                default: 512,
+                max: 1024,
+            },
+            _ => Self {
+                default: 32,
+                max: 128,
+            },
+        }
+    }
+}
 const MAX_PROMPT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: u64 = 64 * 1024;
 const MIB: u64 = 1024 * 1024;
@@ -53,7 +71,10 @@ const BAD_REQUEST: InferenceError = (
     "expected a text conversation with valid system, user, assistant or tool messages",
 );
 
-pub fn prompt_and_limit(body: &Value) -> Result<(&[Value], u64), InferenceError> {
+pub fn prompt_and_limit(
+    body: &Value,
+    limits: OutputLimits,
+) -> Result<(&[Value], u64), InferenceError> {
     let messages = body
         .get("messages")
         .and_then(Value::as_array)
@@ -96,13 +117,13 @@ pub fn prompt_and_limit(body: &Value) -> Result<(&[Value], u64), InferenceError>
         .get("max_completion_tokens")
         .or_else(|| body.get("max_tokens"))
     {
-        None => DEFAULT_OUTPUT_TOKENS,
+        None => limits.default,
         Some(value) => value
             .as_u64()
-            .filter(|v| (1..=MAX_OUTPUT_TOKENS).contains(v))
+            .filter(|v| (1..=limits.max).contains(v))
             .ok_or((
                 "400 Bad Request",
-                "native output limit must be between 1 and 128 tokens",
+                "output token count is outside the model's advertised range",
             ))?,
     };
     Ok((messages, max))
@@ -276,7 +297,8 @@ mod tests {
             ],
             "max_tokens": 12
         });
-        let result = prompt_and_limit(&body);
+        let limits = OutputLimits::for_build(None);
+        let result = prompt_and_limit(&body, limits);
         assert_eq!(
             result,
             body["messages"]
@@ -285,8 +307,21 @@ mod tests {
                 .ok_or(BAD_REQUEST)
         );
         assert!(
-            prompt_and_limit(&json!({"messages": body["messages"], "max_tokens": 129})).is_err()
+            prompt_and_limit(
+                &json!({"messages": body["messages"], "max_tokens": 129}),
+                limits
+            )
+            .is_err()
         );
+        for build in ["SQ-10", "SQ-15", "SQ-20"] {
+            let limits = OutputLimits::for_build(Some(build));
+            let mut request = json!({"messages": body["messages"]});
+            assert_eq!(prompt_and_limit(&request, limits).map(|(_, n)| n), Ok(512));
+            request["max_completion_tokens"] = 1024.into();
+            assert_eq!(prompt_and_limit(&request, limits).map(|(_, n)| n), Ok(1024));
+            request["max_completion_tokens"] = 1025.into();
+            assert!(prompt_and_limit(&request, limits).is_err());
+        }
         assert!(admit_model(10 * 1024 * MIB, Some(3481), 4096).is_err());
         assert!(admit_model(10 * 1024 * MIB, Some(15000), 4096).is_ok());
         assert_eq!(context_capacity(&json!({}), 131_072), Ok(131_072));

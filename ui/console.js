@@ -184,6 +184,7 @@
       r.data.data.forEach((m) => {
         const opt = document.createElement('option');
         opt.value = m.id;
+        opt.dataset.outputLimit = String(m.max_output_tokens || 128);
         opt.textContent = m.id;
         sel.appendChild(opt);
 
@@ -257,8 +258,10 @@
         $('chat-status').textContent = 'Set Reasoning to none for the native engine.';
         return;
       }
-      if (!usingUpstream && Number($('opt-max-tokens').value) > 128) {
-        $('chat-status').textContent = 'The native engine supports up to 128 output tokens.';
+      const selectedOutput = Number($('opt-max-tokens').value);
+      const outputLimit = Number($('model-select').selectedOptions[0]?.dataset.outputLimit || 128);
+      if (!usingUpstream && selectedOutput > outputLimit) {
+        $('chat-status').textContent = `This model supports up to ${outputLimit} output tokens.`;
         return;
       }
       if (!textOverride) input.value = '';
@@ -282,7 +285,7 @@
             ...(!usingUpstream ? {desktop_keepalive: true} : {}),
             ...(!usingUpstream && $('opt-context').value !== 'auto'
               ? {context_length: Number($('opt-context').value)} : {}),
-            max_tokens: Number($('opt-max-tokens').value),
+            ...(selectedOutput || usingUpstream ? { max_tokens: selectedOutput || 32 } : {}),
             reasoning_effort: $('opt-effort').value,
           }),
         });

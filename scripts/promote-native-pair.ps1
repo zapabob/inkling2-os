@@ -81,7 +81,7 @@ foreach ($asset in $receipt.assets) {
 }
 $consoleZip = $files["inkling2-os-v$version-win64-console.zip"]
 $engineZip = $files['inkling2-cuda-engine-win64-sm120a.zip']
-$iso = $files['inkling2-os-v1.1.0-x86_64-sm120.iso']
+$iso = $files['inkling2-os-v1.2.0-x86_64-sm120.iso']
 if (-not $consoleZip -or -not $engineZip -or (-not $windowsOnly -and -not $iso)) { throw 'The paired release assets are incomplete.' }
 
 if ($Stage -eq 'Install') {
@@ -117,8 +117,8 @@ if ($Stage -eq 'Install') {
             (Invoke-RestMethod -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 3).console_mode -ne 'local') {
             throw 'Port is in use by a different service or authentication mode.'
         }
-        if (Get-CimInstance Win32_Process -Filter "ParentProcessId=$($service.ProcessId) AND Name='inkling2-engine.exe'") {
-            throw 'The installed console is currently processing a model request.'
+        if (Get-CimInstance Win32_Process -Filter "ParentProcessId=$($service.ProcessId) AND (Name='inkling2-engine.exe' OR Name='inkling2-engine-sq15.exe')") {
+            throw 'Unload the active resident engine before replacing its binaries.'
         }
     }
 

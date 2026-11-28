@@ -113,7 +113,7 @@ fn render(template: &str, messages: &[Value], tools: &Tools) -> Result<String, E
     Ok(text)
 }
 
-fn load_manifest(model: &StrataModelInfo) -> Option<Value> {
+pub fn load_manifest(model: &StrataModelInfo) -> Option<Value> {
     let mut file = File::open(&model.path).ok()?;
     file.seek(SeekFrom::Start(model.manifest_offset)).ok()?;
     let mut decoder = zstd::stream::read::Decoder::new(file.take(model.manifest_bytes)).ok()?;
@@ -129,7 +129,7 @@ fn load_manifest(model: &StrataModelInfo) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn manifest_limit(manifest: &Value) -> usize {
+pub fn manifest_limit(manifest: &Value) -> usize {
     manifest
         .pointer("/config/text_config/model_max_length")
         .and_then(Value::as_u64)
@@ -137,22 +137,18 @@ fn manifest_limit(manifest: &Value) -> usize {
         .min(MAX_CONTEXT_IDS as u64) as usize
 }
 
-pub fn model_context_limit(model: &StrataModelInfo) -> Option<usize> {
-    load_manifest(model).map(|m| manifest_limit(&m))
-}
-
 pub fn prepare(
     model: &StrataModelInfo,
+    manifest: &Value,
     messages: &[Value],
     max_output: u64,
     tools: Tools,
 ) -> Result<NativePrompt, InferenceError> {
-    let manifest = load_manifest(model).ok_or(MODEL_CONFIG_ERROR)?;
     let template = manifest["chat_template"]
         .as_str()
         .filter(|text| !text.is_empty() && text.len() <= 64 * 1024)
         .ok_or(MODEL_CONFIG_ERROR)?;
-    let tokenizer = load_tokenizer(model, &manifest)?;
+    let tokenizer = load_tokenizer(model, manifest)?;
 
     let token = |name| tokenizer.token_to_id(name).ok_or(MODEL_CONFIG_ERROR);
     let model_token = token("<|message_model|>")?;
@@ -180,7 +176,7 @@ pub fn prepare(
     if tools.declarations.is_empty() && !input_ids.ends_with(&[model_token, text_token]) {
         return Err(MODEL_CONFIG_ERROR);
     }
-    let model_limit = manifest_limit(&manifest);
+    let model_limit = manifest_limit(manifest);
     if input_ids.len() as u64 + max_output > model_limit as u64 {
         return Err((
             "400 Bad Request",
@@ -265,7 +261,8 @@ mod tests {
         messages: &[Value],
         max: u64,
     ) -> Result<NativePrompt, InferenceError> {
-        super::prepare(model, messages, max, Tools::default())
+        let manifest = load_manifest(model).ok_or(MODEL_CONFIG_ERROR)?;
+        super::prepare(model, &manifest, messages, max, Tools::default())
     }
 
     #[test]
