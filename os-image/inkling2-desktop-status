@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+link='No network route'
+if route=$(ip -4 route show default) && [ -n "$route" ]; then
+    link='Network route up'
+fi
+
+engine=$(curl --disable --noproxy '*' --fail --silent --max-time 2 \
+    http://127.0.0.1:8080/v1/engine/status) || engine=''
+case "$engine" in
+    *'"state":"ready"'*) ai='AI ready' ;;
+    *'"state":"busy"'*) ai='AI working' ;;
+    *'"state":"idle"'*|*'"state":"on-demand"'*) ai='AI standby' ;;
+    *) ai='AI service offline' ;;
+esac
+
+printf '%s  ·  %s\n' "$link" "$ai"

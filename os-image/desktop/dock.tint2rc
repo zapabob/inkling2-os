@@ -1,8 +1,21 @@
+rounded = 16
+border_width = 1
+background_color = #23383f 100
+border_color = #6c9ca4 50
+
 panel_items = L
 panel_position = bottom center horizontal
-panel_size = 100% 44
+panel_size = 100% 60
+panel_shrink = 1
+panel_margin = 0 12
+panel_padding = 12 5 8
+panel_background_id = 1
 panel_layer = top
-launcher_icon_size = 28
+strut_policy = follow_size
+
+launcher_icon_theme = Humanity
+launcher_icon_size = 32
+launcher_padding = 12 8 10
 launcher_tooltip = 1
 launcher_item_app = /usr/share/applications/inkling2-chat.desktop
 launcher_item_app = /usr/share/applications/inkling2-finder.desktop

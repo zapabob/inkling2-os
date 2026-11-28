@@ -76,27 +76,33 @@ RUN groupadd --gid 61000 inkling2 && useradd --uid 61000 --gid 61000 \
 
 FROM appliance AS private-appliance
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    epiphany-browser fonts-dejavu-core fonts-noto-cjk linux-firmware-realtek openbox udev \
+    fonts-dejavu-core fonts-noto-cjk humanity-icon-theme libasound2t64 libgtk-3-0t64 \
+    libx11-xcb1 linux-firmware-realtek openbox udev \
     x11-utils xinit xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-video-fbdev \
     && rm -rf /var/lib/apt/lists/*
 
 FROM private-appliance AS private-desktop-appliance
-RUN apt-get update && apt-get install -y --no-install-recommends libdbus-glib-1-2 tint2 xterm \
+RUN apt-get update && apt-get install -y --no-install-recommends libdbus-glib-1-2 tint2 x11-xserver-utils xterm \
     && groupadd --gid 61003 inkling2-tor \
     && useradd --uid 61003 --gid 61003 --home-dir /var/lib/inkling2/tor-state \
         --no-create-home --shell /usr/sbin/nologin inkling2-tor \
     && rm -rf /var/lib/apt/lists/*
 COPY --chmod=0755 os-image/inkling2-desktop-launch /usr/bin/inkling2-desktop-launch
+COPY --chmod=0755 os-image/inkling2-desktop-status /usr/bin/inkling2-desktop-status
 COPY --chmod=0755 os-image/inkling2-tor-session /usr/lib/inkling2/tor-session
 COPY os-image/desktop/*.desktop /usr/share/applications/
-COPY os-image/desktop/tint2rc /etc/inkling2/desktop/tint2rc
+COPY os-image/desktop/*.tint2rc /etc/inkling2/desktop/
 
-FROM ${UBUNTU_IMAGE} AS tor-browser
+FROM ${UBUNTU_IMAGE} AS signed-browser-tools
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gpg gpgv xz-utils \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gpg gpg-agent gpgv xz-utils \
     && rm -rf /var/lib/apt/lists/*
-RUN apt-get update && apt-get install -y --no-install-recommends gpg-agent \
-    && rm -rf /var/lib/apt/lists/*
+
+FROM signed-browser-tools AS console-browser
+COPY --chmod=0755 os-image/install-console-browser /usr/local/bin/install-console-browser
+RUN /usr/local/bin/install-console-browser
+
+FROM signed-browser-tools AS tor-browser
 COPY --chmod=0755 os-image/install-tor-browser /usr/local/bin/install-tor-browser
 RUN /usr/local/bin/install-tor-browser
 
@@ -149,6 +155,8 @@ RUN --mount=type=tmpfs,target=/tmp,size=3500m python3 /usr/local/bin/installed_d
 FROM disk-tools AS private-disk-tools
 COPY --from=private-desktop-appliance / /rootfs/
 COPY --from=private-cuda / /rootfs/
+COPY --from=console-browser /verified/firefox/ /rootfs/opt/inkling2-web/firefox/
+COPY os-image/desktop/firefox-policies.json /rootfs/opt/inkling2-web/firefox/distribution/policies.json
 COPY --from=tor-browser /verified/tor-browser/ /rootfs/opt/inkling2-tor-browser/
 COPY --from=tor-browser /verified/SHA256SUMS /verified/*.asc /rootfs/usr/share/doc/inkling2-tor-browser/
 COPY os-image/net/tor.nftables.conf /private-tor.nft
@@ -157,6 +165,8 @@ COPY --chmod=0755 os-image/inkling2-desktop-session /rootfs/usr/lib/inkling2/des
 COPY os-image/inkling2-desktop.apparmor /rootfs/etc/apparmor.d/inkling2-desktop
 RUN set -eu; release=$(find /rootfs/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n'); \
     test -f "/rootfs/lib/modules/$release/updates/inkling2/nvidia.ko"; \
+    chgrp -R 61003 /rootfs/opt/inkling2-tor-browser; \
+    chmod -R g+rX /rootfs/opt/inkling2-tor-browser; \
     apt-get update; mkdir /extra-kernel; cd /extra-kernel; \
     apt-get download "linux-modules-extra-$release"; \
     dpkg-deb --fsys-tarfile linux-modules-extra-*.deb | tar --keep-directory-symlink -x -C /rootfs; \

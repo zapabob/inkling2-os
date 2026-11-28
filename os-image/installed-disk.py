@@ -117,6 +117,17 @@ def build(disk_bytes: int, rootfs: Path, iso_boot: Path, output: Path, with_mode
         shutil.copyfile(iso_boot / "initramfs.img", boot / "initrd.img")
         fstab = f"UUID={root_uuid} / ext4 defaults 0 1\n"
         if model_uuid:
+            # NTFS3 gives the root inode directory permissions independent of dmask.
+            # Keep model access behind a group-restricted directory on ext4.
+            private_models = Path("/var/lib/inkling2/model-volume")
+            model_directory = rootfs / private_models.relative_to("/")
+            model_directory.mkdir(mode=0o750)
+            os.chown(model_directory, 0, 61000)
+            (model_directory / "files").mkdir(mode=0o755)
+            os.chown(model_directory / "files", 0, 61000)
+            models = rootfs / "models"
+            models.rmdir()
+            models.symlink_to(private_models / "files", target_is_directory=True)
             fstab += (f"PARTUUID={model_uuid} /models ntfs3 "
                       "ro,nodev,nosuid,noexec,uid=0,gid=61000,fmask=0337,dmask=0027 0 0\n")
             (rootfs / "etc/inkling2/model-volume").write_text(model_uuid + "\n", encoding="ascii")
