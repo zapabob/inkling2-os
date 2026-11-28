@@ -192,11 +192,21 @@ pub fn generate(
     }
     let timeout = request_timeout(prompt.input_ids.len());
     let csv = |ids: &[u32]| ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
-    let request = format!(
-        "{max}\t{}\t{}\n",
+    let mut request = format!(
+        "{max}\t{}\t{}",
         csv(&prompt.stop_ids),
         csv(&prompt.input_ids)
     );
+    if !prompt.channel_prefixes.is_empty() {
+        request.push('\t');
+        let options = prompt
+            .channel_prefixes
+            .iter()
+            .map(|ids| csv(ids))
+            .collect::<Vec<_>>();
+        request.push_str(&options.join(";"));
+    }
+    request.push('\n');
     if let Some(worker) = resident {
         let line = worker.exchange(request, timeout)?;
         return read_reply(&line, prompt, max).ok_or((

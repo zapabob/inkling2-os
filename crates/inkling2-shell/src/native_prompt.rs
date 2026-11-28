@@ -25,6 +25,7 @@ pub struct NativePrompt {
     pub tools: Tools,
     pub input_ids: Vec<u32>,
     pub stop_ids: Vec<u32>,
+    pub channel_prefixes: Vec<Vec<u32>>,
     pub model_limit: usize,
 }
 
@@ -186,7 +187,11 @@ pub fn prepare(
             "prompt and reserved output exceed the model context (maximum 131072 tokens)",
         ));
     }
+    let channel_prefixes = tools
+        .channel_prefixes(&tokenizer)
+        .ok_or(MODEL_CONFIG_ERROR)?;
     Ok(NativePrompt {
+        channel_prefixes,
         tokenizer,
         tools,
         input_ids,
@@ -315,8 +320,18 @@ mod tests {
                 "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|>",
                 "<|message_user|><|content_text|>Time?<|end_message|>",
                 r#"<|message_model|><|content_thinking|><|end_message|><|message_model|>get_hour<|content_invoke_tool_json|>{"name":"get_hour","args":{}}<|end_message|>"#,
-                "<|content_model_end_sampling|><|message_tool|>get_hour<|content_text|>09<|end_message|><|message_model|><|content_thinking|><|end_message|>"
+                "<|content_model_end_sampling|><|message_tool|>get_hour<|content_text|>09<|end_message|><|message_model|><|content_thinking|><|end_message|><|message_model|>"
             )
+        );
+        let prefixes = tools
+            .channel_prefixes(&tokenizer)
+            .ok_or("channel encoding failed")?;
+        assert_eq!(
+            prefixes,
+            vec![
+                encode("<|content_text|>")?,
+                encode("get_hour<|content_invoke_tool_json|>")?
+            ]
         );
         Ok(())
     }

@@ -88,11 +88,33 @@ impl Tools {
             return format!("{EMPTY_THINK}{MODEL}{name}{INVOKE}");
         }
         if self.names.is_empty() {
-            TEXT
+            TEXT.to_owned()
         } else {
-            EMPTY_THINK
+            format!("{EMPTY_THINK}{MODEL}")
         }
-        .to_owned()
+    }
+
+    /// Only the channel header is constrained. Its alternatives are scored by
+    /// the CUDA model; text and JSON arguments are generated normally.
+    pub fn channel_prefixes(&self, tokenizer: &Tokenizer) -> Option<Vec<Vec<u32>>> {
+        let mut choices = Vec::new();
+        if self.forced.is_some() || self.names.is_empty() {
+            return Some(choices);
+        }
+        if !self.required {
+            choices.push(vec![tokenizer.token_to_id(TEXT)?]);
+        }
+        let invoke = tokenizer.token_to_id(INVOKE)?;
+        for def in &self.declarations {
+            let name = def["function"]["name"].as_str()?;
+            let mut prefix = tokenizer.encode(name, false).ok()?.get_ids().to_vec();
+            if prefix.is_empty() || prefix.len() > 64 {
+                return None;
+            }
+            prefix.push(invoke);
+            choices.push(prefix);
+        }
+        Some(choices)
     }
 
     /// Decode a single native SC117 message. Tool arguments become callable only after a stop.
@@ -106,7 +128,7 @@ impl Tools {
             }
             tokenizer.decode(seq, false).ok()
         };
-        // After the empty thinking turn, SC117 generates its own assistant header.
+        // Accept the explicit model header for recorded SC117 responses too.
         let ids = if self.forced.is_none() && !self.names.is_empty() {
             ids.strip_prefix(&[tokenizer.token_to_id(MODEL)?])
                 .unwrap_or(ids)
