@@ -7,7 +7,7 @@ param(
     [ValidateRange(1024,65535)][int]$Port = 18081,
     [ValidateRange(0,65535)][int]$RustXngPort = 29483,
     [switch]$Resident,
-    [string]$PreloadModel = 'Inkling-2-Mini-SQ-15-abliterated',
+    [ValidatePattern('^[A-Za-z0-9._-]+$')][string]$PreloadModel = 'Inkling-2-Mini-SQ-15-abliterated',
     [switch]$SkipUsbCache,
     [string]$UsbWriteLog,
     [string]$UsbVerification,
@@ -165,6 +165,8 @@ if ($Stage -eq 'Install') {
     $shortcut.TargetPath = (Get-Command pwsh.exe).Source
     $launcher = (Resolve-Path (Join-Path $installation '../scripts/start-windows-console.ps1')).Path
     $shortcut.Arguments = '-NoProfile -WindowStyle Hidden -File "' + $launcher + '" -Open -Port ' + $Port + ' -ModelsDir "' + $source.DirectoryName + '"'
+    if ($Resident) { $shortcut.Arguments += ' -Resident -PreloadModel "' + $PreloadModel + '"' }
+    if ($SkipUsbCache) { $shortcut.Arguments += ' -SkipUsbCache' }
     $shortcut.WorkingDirectory = Split-Path $installation
     $shortcut.WindowStyle = 7
     $shortcut.Save()

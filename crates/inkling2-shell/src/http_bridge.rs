@@ -567,7 +567,16 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
             send_json(&mut stream, "200 OK", &health.to_string());
         }
         ("GET", "/v1/models") => {
-            let models = discover_models(&ctx.models_dir);
+            let mut models = discover_models(&ctx.models_dir);
+            // A new desktop chat selects the first entry until the operator chooses one.
+            if ctx.resident
+                && let Some(preferred) = env::var_os("INKLING2_PRELOAD_MODEL")
+                && let Some(index) = models
+                    .iter()
+                    .position(|m| m.path.file_stem() == Some(preferred.as_os_str()))
+            {
+                models[..=index].rotate_right(1);
+            }
             let mut items = Vec::new();
             for m in models {
                 let id = m
