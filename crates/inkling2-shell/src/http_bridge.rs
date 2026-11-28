@@ -27,6 +27,7 @@ use inkling2_companion::voice_call::{VoicePersona, speak_text};
 use crate::hardened_fs::{list_jailed_dir, read_jailed_file};
 use crate::http_request::{bearer_matches, read_request};
 use crate::native_inference;
+use crate::neon_api::{NeonRuntime, handle_neon_endpoint};
 use crate::public_browser::{fetch_public_https, render_document};
 use crate::resident_engine::ResidentEngine;
 use crate::strata_catalog::StrataModelInfo;
@@ -129,6 +130,7 @@ pub struct BridgeContext {
     upstream: Option<SocketAddr>,
     upstream_model: Option<String>,
     upstream_key: Option<String>,
+    neon: NeonRuntime,
 }
 
 fn json_escape(s: &str) -> String {
@@ -612,11 +614,23 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
                 return;
             }
             if let Ok(mut m) = ctx.memory.lock() {
-                let id = m.insert(text, imp);
-                let saved = m.save_atomic(&ctx.state_dir.join("memory45.ikm")).is_ok();
+                let mut next = m.clone();
+                let id = next.insert(text, imp);
+                if next
+                    .save_atomic(&ctx.state_dir.join("memory45.ikm"))
+                    .is_err()
+                {
+                    send_error(
+                        &mut stream,
+                        "500 Internal Server Error",
+                        "could not save memory",
+                    );
+                    return;
+                }
+                *m = next;
                 let s = m.stats();
                 let json = format!(
-                    r#"{{"id":{id},"saved":{saved},"serialized_bytes":{},"budget_bytes":{}}}"#,
+                    r#"{{"id":{id},"saved":true,"serialized_bytes":{},"budget_bytes":{}}}"#,
                     s.serialized_bytes, s.budget_bytes
                 );
                 send_json(&mut stream, "200 OK", &json);
@@ -1070,11 +1084,23 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
             }
         }
         _ => {
-            send_json(
-                &mut stream,
-                "404 Not Found",
-                r#"{"error":"endpoint not found"}"#,
-            );
+            if let Some((status, json_body)) = handle_neon_endpoint(
+                method,
+                path,
+                &body,
+                &ctx.neon,
+                &ctx.voice,
+                &ctx.lora,
+                &ctx.state_dir,
+            ) {
+                send_json(&mut stream, status, &json_body);
+            } else {
+                send_json(
+                    &mut stream,
+                    "404 Not Found",
+                    r#"{"error":"endpoint not found"}"#,
+                );
+            }
         }
     }
 }
@@ -1095,9 +1121,26 @@ pub fn run_http_bridge(
         ));
     }
 
-    let memory = Memory45Store::load(&state_dir.join("memory45.ikm")).unwrap_or_default();
-    let lora = DynamicLoraAdapter::load(&state_dir.join("dynamic_lora.iklora"))
-        .unwrap_or_else(|_| DynamicLoraAdapter::new(LoraConfig::default()));
+    let memory_path = state_dir.join("memory45.ikm");
+    let memory = if memory_path.try_exists().map_err(|e| e.to_string())?
+        || state_dir
+            .join("memory45.ikm.bak1")
+            .try_exists()
+            .map_err(|e| e.to_string())?
+    {
+        Memory45Store::load_with_recovery(
+            &memory_path,
+            inkling2_companion::memory45::MAX_MEMORY_BYTES,
+        )?
+    } else {
+        Memory45Store::default()
+    };
+    let adapter_path = state_dir.join("dynamic_lora.iklora");
+    let lora = if adapter_path.try_exists().map_err(|e| e.to_string())? {
+        DynamicLoraAdapter::load(&adapter_path)?
+    } else {
+        DynamicLoraAdapter::new(LoraConfig::default())
+    };
     let bearer_token = usable_token("INKLING2_BRIDGE_TOKEN")?;
     let inference_token = usable_token("INKLING2_INFERENCE_TOKEN")?;
     let local_console = env::var("INKLING2_LOCAL_CONSOLE").is_ok_and(|v| v == "1");
@@ -1144,6 +1187,7 @@ pub fn run_http_bridge(
         .transpose()?;
     let model_listing = Dir::open_ambient_dir(&models_dir, ambient_authority()).ok();
 
+    let neon = NeonRuntime::load(&state_dir)?;
     let ctx = Arc::new(BridgeContext {
         engine_bin,
         models_dir,
@@ -1165,6 +1209,7 @@ pub fn run_http_bridge(
         upstream,
         upstream_model: env::var("INKLING2_UPSTREAM_MODEL").ok(),
         upstream_key,
+        neon,
     });
 
     let listener = TcpListener::bind(addr).map_err(|e| format!("bind {addr} failed: {e}"))?;

@@ -17,7 +17,7 @@ docker build `
 if ($LASTEXITCODE -ne 0) {
     throw "[Inkling2-OS] docker build failed with exit code $LASTEXITCODE"
 }
-$isoPath = Join-Path $OutDir "inkling2-os-v1.2.0-x86_64-sm120.iso"
+$isoPath = Join-Path $OutDir "inkling2-os-v1.3.0-x86_64-sm120.iso"
 if (-not (Test-Path $isoPath)) {
     throw "[Inkling2-OS] Expected ISO not found at $isoPath"
 }

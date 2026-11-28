@@ -1,0 +1,16 @@
+[package]
+name = "inkling2-perception"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+inkling2-companion = { path = "../inkling2-companion" }
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+unwrap_used = "deny"
+expect_used = "deny"

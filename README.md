@@ -1,10 +1,25 @@
-# Inkling2 Desktop 1.2.0
+# Inkling2 Desktop 1.3.0
 
-Inkling2 Desktop runs SC117 Inkling-2-Mini on your own Windows GPU. Its desktop opens local chat, documents, web search and Windows applications. Hermes Agent and Strata can share the same resident model through the loopback Chat Completions API.
+Inkling2 Desktop runs a resident SC117 model on your Windows GPU. Open chat, documents, web search and applications from the desktop, or connect Hermes and Strata to the same model. NEON adds console APIs for system inspection, explicit memory, camera status and queued speech.
 
-[Download the Windows desktop](https://github.com/zapabob/inkling2-os/releases/tag/v1.2.0) · [Download the matching CUDA engine](https://github.com/zapabob/inkling2-cuda-engine/releases/tag/v1.2.0) · [Linux diagnostic releases](https://github.com/zapabob/inkling2-os/releases?q=linux)
+[Windows console ZIP and checksums](https://github.com/zapabob/inkling2-os/releases/tag/v1.3.0) · [Matching CUDA engine and runtime DLLs](https://github.com/zapabob/inkling2-cuda-engine/releases/tag/v1.3.0) · [Linux diagnostic releases](https://github.com/zapabob/inkling2-os/releases?q=linux)
 
-![Inkling2 Desktop with the model and context selectors](docs/media/inkling2-desktop-131k.png)
+![Windows desktop with the model and context selectors](docs/media/inkling2-desktop-131k.png)
+
+## Use NEON from a local client
+
+With the desktop running, inspect the available task executors and ask for the host OS, architecture and logical CPU count. Each submitted task needs a fresh ID. Windows listens on loopback and requires no key by default.
+
+```powershell
+$api = 'http://127.0.0.1:18083/v1'
+Invoke-RestMethod "$api/agent/status"
+$task = @{ task_id = (New-Guid).ToString(); skill = 'sys.info' } | ConvertTo-Json
+Invoke-RestMethod "$api/agent/tasks" -Method Post -ContentType 'application/json' -Body $task
+```
+
+The task service also runs `perception.status`. Camera capture is opt-in through the operator's launch environment and discards the temporary image. The observation describes the capture. SC117 image understanding is outside the supplied model path. Speech stops between sentences. Explicit memory feedback persists as an unverified observation and can be recalled with its source after restart. Learning evaluation is advisory. The CUDA engine supports manually activated native adapters, while the HTTP learning routes operate on separate companion state.
+
+See the [NEON architecture](docs/NEON_ARCHITECTURE.md), [Hermes API and examples](docs/HERMES_INTEGRATION.md) and [Neural Memory45 storage limits](docs/NEURAL_MEMORY45.md).
 
 ## Windows console
 
@@ -19,7 +34,7 @@ Use an RTX 5060 Ti 16 GB or a compatible Blackwell `sm_120a` system with a CUDA 
 ./scripts/start-windows-desktop.ps1 -ModelsDir 'C:/Models/SC117'
 ```
 
-Both commands should print `1.2.0`. To create the Start menu and sign-in shortcuts, run the same desktop command with `-RegisterAtLogon`. Add `-SkipUsbCache` to keep a removable drive available for other work. An existing qualified installation can be upgraded in place using the install stage below.
+Both commands should print `1.3.0`. To create the Start menu and sign-in shortcuts, run the same desktop command with `-RegisterAtLogon`. Add `-SkipUsbCache` to keep a removable drive available for other work. An existing qualified installation can be upgraded in place using the install stage below.
 
 ## Chat, files and web
 
@@ -33,7 +48,7 @@ Choose a custom Chat Completions provider with base URL `http://127.0.0.1:18083/
 
 The model list advertises context and output limits. Each tool turn can select one declared function. Hermes validates and executes it under its own permissions and sends the result back with its call ID. During longer input processing the streaming endpoint sends keepalives, then delivers the completed response as buffered events.
 
-The desktop preloads SQ-15 by default. One model stays resident, with sequence state reset between requests. The SQ-15 desktop profile caps expert placement at 6,144 MiB VRAM and 2,048 MiB pinned RAM and uses the Windows file cache for remaining expert reads. Actual allocations depend on available memory. Other tiers retain the 2,048/512 MiB desktop caps. The launcher discovers installed Strata weights and can also use `-AdditionalModelsDirs`. The [engine README](https://github.com/zapabob/inkling2-cuda-engine/blob/v1.2.0/README.md) lists cache controls.
+The desktop preloads SQ-15 by default. One model stays resident, with sequence state reset between requests. The SQ-15 desktop profile caps expert placement at 6,144 MiB VRAM and 2,048 MiB pinned RAM and uses the Windows file cache for remaining expert reads. Actual allocations depend on available memory. Other tiers retain the 2,048/512 MiB desktop caps. The launcher discovers installed Strata weights and can also use `-AdditionalModelsDirs`. The [engine README](https://github.com/zapabob/inkling2-cuda-engine/blob/v1.3.0/README.md) lists cache controls.
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:18083/health
@@ -54,7 +69,7 @@ $pair = @{ QualificationDir = $qualification; EngineRepo = $engine; Port = 18083
 
 Qualification tests CUDA, the tokenizer, one-shot generation and 131,072-context resident generation on all three weights. The receipt binds the sources, binaries and archives by SHA-256. Installation keeps rollback copies and preserves the original directory and desktop shortcuts. Verify the versions, installed chat reply and resident state.
 
-Push the qualified revisions to both main branches and dispatch the OS `release.yml` workflow on main. After OS validation, OS staging and engine CI pass on those revisions, publish with `./scripts/promote-native-pair.ps1 @pair -Stage Publish -Tag v1.2.0`. Each repository publishes checksums for its own assets.
+Push the qualified revisions to both main branches and dispatch the OS `release.yml` workflow on main. After OS validation, OS staging and engine CI pass on those revisions, publish with `./scripts/promote-native-pair.ps1 @pair -Stage Publish -Tag v1.3.0`. Each repository publishes checksums for its own assets.
 
 ## Linux diagnostic ISO
 

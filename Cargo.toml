@@ -4,11 +4,13 @@ members = [
     "crates/inkling2-init",
     "crates/inkling2-shell",
     "crates/inkling2-companion",
+    "crates/inkling2-agent",
+    "crates/inkling2-perception",
     "crates/inkling2-resource",
 ]
 
 [workspace.package]
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 license = "MIT"
 authors = ["Inkling2-OS Engineering"]

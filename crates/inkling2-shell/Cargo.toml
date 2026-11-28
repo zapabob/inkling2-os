@@ -6,6 +6,8 @@ license.workspace = true
 
 [dependencies]
 inkling2-companion = { path = "../inkling2-companion" }
+inkling2-perception = { path = "../inkling2-perception" }
+inkling2-agent = { path = "../inkling2-agent" }
 inkling2-resource = { path = "../inkling2-resource" }
 cap-std = "4.0.3"
 cap-fs-ext = "4.0.3"

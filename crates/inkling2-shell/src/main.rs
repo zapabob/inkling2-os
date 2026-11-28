@@ -15,6 +15,7 @@ mod muse_ssh;
 mod native_inference;
 mod native_prompt;
 mod native_tools;
+mod neon_api;
 mod net_client;
 mod public_browser;
 mod resident_engine;
