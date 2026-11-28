@@ -63,6 +63,29 @@ fn render(template: &str, messages: &[Value], tools: &Tools) -> Result<String, E
     env.add_function("raise_exception", |message: String| -> Result<(), Error> {
         Err(Error::new(ErrorKind::InvalidOperation, message))
     });
+    // Reproduce the empty reasoning block preceding earlier tool-enabled turns.
+    // The template emits a block only for a nonempty value. User data containing
+    // reserved markers has already been rejected before rendering.
+    let framed;
+    let messages =
+        if !tools.declarations.is_empty() && messages.iter().any(|m| m["role"] == "assistant") {
+            framed = messages
+                .iter()
+                .cloned()
+                .map(|mut m| {
+                    if m["role"] == "assistant"
+                        && (m["tool_calls"].is_array()
+                            || m["content"].as_str().is_some_and(|v| !v.is_empty()))
+                    {
+                        m["reasoning_content"] = "<|content_thinking|>".into();
+                    }
+                    m
+                })
+                .collect::<Vec<_>>();
+            framed.as_slice()
+        } else {
+            messages
+        };
     let mut text = env.render_str(
         &template,
         context! {
@@ -72,6 +95,12 @@ fn render(template: &str, messages: &[Value], tools: &Tools) -> Result<String, E
             reasoning_effort => "none",
         },
     )?;
+    if !tools.declarations.is_empty() {
+        text = text.replace(
+            "<|content_thinking|><|content_thinking|><|end_message|>",
+            native_tools::EMPTY_THINK,
+        );
+    }
     // The model template ends after the last completed turn. Open the visible
     // assistant channel in the same way as Strata's non-thinking Inkling path.
     if !text.ends_with("<|content_text|>") {
@@ -247,7 +276,9 @@ mod tests {
                 .map(|e| e.get_ids().to_vec())
                 .map_err(|e| e.to_string())
         };
-        let ids = encode(r#"get_hour<|content_invoke_tool_json|>{"name":"get_hour","args":{}}"#)?;
+        let ids = encode(
+            r#"<|message_model|>get_hour<|content_invoke_tool_json|>{"name":"get_hour","args":{}}"#,
+        )?;
         let call = tools
             .decode(&tokenizer, &ids, "stop")
             .ok_or("call was rejected")?;
@@ -258,7 +289,11 @@ mod tests {
         assert!(tools.decode(&tokenizer, &ids, "length").is_none());
         let unknown = encode(r#"other<|content_invoke_tool_json|>{"name":"other","args":{}}"#)?;
         assert!(tools.decode(&tokenizer, &unknown, "stop").is_none());
-        let text = tools.decode(&tokenizer, &encode("<|content_text|>09")?, "stop");
+        let text = tools.decode(
+            &tokenizer,
+            &encode("<|message_model|><|content_text|>09")?,
+            "stop",
+        );
         assert_eq!(text, Some(json!({"role":"assistant","content":"09"})));
         let user = json!({"role":"user","content":"Time?"});
         let result =
@@ -279,8 +314,8 @@ mod tests {
                 r#"<|message_system|>tool_declare<|content_xml|>[{"description":"Read the hour","name":"get_hour","parameters":{"type":"object"},"type":"function"}]<|end_message|>"#,
                 "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|>",
                 "<|message_user|><|content_text|>Time?<|end_message|>",
-                r#"<|message_model|>get_hour<|content_invoke_tool_json|>{"name":"get_hour","args":{}}<|end_message|>"#,
-                "<|content_model_end_sampling|><|message_tool|>get_hour<|content_text|>09<|end_message|><|message_model|>"
+                r#"<|message_model|><|content_thinking|><|end_message|><|message_model|>get_hour<|content_invoke_tool_json|>{"name":"get_hour","args":{}}<|end_message|>"#,
+                "<|content_model_end_sampling|><|message_tool|>get_hour<|content_text|>09<|end_message|><|message_model|><|content_thinking|><|end_message|>"
             )
         );
         Ok(())

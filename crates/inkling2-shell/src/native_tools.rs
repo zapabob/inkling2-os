@@ -18,6 +18,8 @@ const BAD_TURN: InferenceError = (
 );
 const INVOKE: &str = "<|content_invoke_tool_json|>";
 const TEXT: &str = "<|content_text|>";
+pub const MODEL: &str = "<|message_model|>";
+pub const EMPTY_THINK: &str = "<|content_thinking|><|end_message|>";
 
 fn valid_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
@@ -83,13 +85,14 @@ impl Tools {
 
     pub fn assistant_prefix(&self) -> String {
         if let Some(name) = &self.forced {
-            return format!("{name}{INVOKE}");
+            return format!("{EMPTY_THINK}{MODEL}{name}{INVOKE}");
         }
         if self.names.is_empty() {
-            TEXT.to_owned()
+            TEXT
         } else {
-            String::new()
+            EMPTY_THINK
         }
+        .to_owned()
     }
 
     /// Decode a single native SC117 message. Tool arguments become callable only after a stop.
@@ -102,6 +105,13 @@ impl Tools {
                 return None;
             }
             tokenizer.decode(seq, false).ok()
+        };
+        // After the empty thinking turn, SC117 generates its own assistant header.
+        let ids = if self.forced.is_none() && !self.names.is_empty() {
+            ids.strip_prefix(&[tokenizer.token_to_id(MODEL)?])
+                .unwrap_or(ids)
+        } else {
+            ids
         };
         let invoke_id = tokenizer.token_to_id(INVOKE)?;
         let (name, payload) = if let Some(name) = &self.forced {
