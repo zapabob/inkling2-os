@@ -82,7 +82,7 @@ if (-not $consoleZip -or -not $engineZip -or (-not $windowsOnly -and -not $iso))
 
 if ($Stage -eq 'Install') {
     $source = Get-Item -LiteralPath $ModelPath
-    $tokenizer = Join-Path $source.DirectoryName 'tokenizer.json'
+    $tokenizer = Join-Path $osRepo 'crates/inkling2-shell/assets/sc117/tokenizer.json'
     if ((Get-FileHash -LiteralPath $source.FullName).Hash -ne $receipt.model_sha256 -or
         (Get-FileHash -LiteralPath $tokenizer).Hash -ne $receipt.tokenizer_sha256) {
         throw 'The model and tokenizer changed after qualification.'
@@ -130,7 +130,11 @@ if ($Stage -eq 'Install') {
         PreviewDir = Join-Path $osRepo 'docs'; RustXngPort = $RustXngPort
         Resident = $Resident; PreloadModel = $PreloadModel; SkipUsbCache = $SkipUsbCache
     }
-    if ($listener.Count) { Stop-Process -Id $service.ProcessId }
+    if ($listener.Count) {
+        $previousBridge = Get-Process -Id $service.ProcessId
+        Stop-Process -InputObject $previousBridge
+        if (!$previousBridge.WaitForExit(15000)) { throw 'The previous bridge is still releasing its executable.' }
+    }
     try {
         foreach ($name in $candidate.Keys) { Copy-Item -LiteralPath $candidate[$name] -Destination (Join-Path $installation $name) -Force }
         & (Join-Path $PSScriptRoot 'start-windows-console.ps1') @launch

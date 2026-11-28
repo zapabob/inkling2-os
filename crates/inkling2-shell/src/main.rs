@@ -14,6 +14,7 @@ mod http_request;
 mod muse_ssh;
 mod native_inference;
 mod native_prompt;
+mod native_tools;
 mod net_client;
 mod public_browser;
 mod resident_engine;

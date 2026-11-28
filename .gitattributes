@@ -3,3 +3,5 @@
 /os-image/desktop/* text eol=lf
 /os-image/install-tor-browser text eol=lf
 /os-image/inkling2-tor-session text eol=lf
+/crates/inkling2-shell/assets/sc117/tokenizer.json -text
+/crates/inkling2-shell/assets/sc117/chat_template.jinja -text

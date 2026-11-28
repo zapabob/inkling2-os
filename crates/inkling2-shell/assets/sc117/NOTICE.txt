@@ -1,0 +1,11 @@
+Inkling 2 Mini tokenizer data
+
+Publisher: Thinking Machines Lab
+Licence: Apache License 2.0, included in LICENSE-APACHE-2.0.txt
+Original: https://huggingface.co/thinkingmachines/Inkling-2-Mini/blob/c9d028302cd0f035fdf8e7e91f089a4ce94d2195/tokenizer.json
+SC117 distribution: https://huggingface.co/SC117/Inkling-2-Mini-abliterated-Strata/blob/ae324ac3676b97a3f67b475ffc2534c7521ff7c4/tokenizer.json
+SHA-256: 7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6
+
+The two published files are byte-identical. Inkling2-OS embeds these unmodified bytes in its local bridge.
+The test fixture chat_template.jinja is the SC117 model's unmodified chat template
+(Git blob cae99e08917fe3d9ff21551a7c9a835981c69032). Runtime requests use the template in the loaded weights.

@@ -137,7 +137,11 @@ if ($layout.version -in 2, 3) {
         throw 'Provide the model and SHA-256 hashes from qualification.'
     }
     $model = Get-Item -LiteralPath $ModelPath
-    $tokenizer = Get-Item -LiteralPath (Join-Path $model.DirectoryName 'tokenizer.json')
+    $tokenizerPath = Join-Path $model.DirectoryName 'tokenizer.json'
+    if (!(Test-Path -LiteralPath $tokenizerPath -PathType Leaf)) {
+        $tokenizerPath = Join-Path $PSScriptRoot '../crates/inkling2-shell/assets/sc117/tokenizer.json'
+    }
+    $tokenizer = Get-Item -LiteralPath $tokenizerPath
     $files = @(@{file=$model; hash=$ModelSha256}, @{file=$tokenizer; hash=$TokenizerSha256})
     foreach ($i in 0..1) {
         if ($i -lt $AdditionalModelPath.Count) {

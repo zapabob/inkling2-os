@@ -50,19 +50,10 @@ const UNAVAILABLE: InferenceError = (
 );
 const BAD_REQUEST: InferenceError = (
     "400 Bad Request",
-    "expected text-only system, user or assistant messages",
+    "expected a text conversation with valid system, user, assistant or tool messages",
 );
 
 pub fn prompt_and_limit(body: &Value) -> Result<(&[Value], u64), InferenceError> {
-    if body
-        .get("tools")
-        .is_some_and(|v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()))
-    {
-        return Err((
-            "400 Bad Request",
-            "tool calling is unavailable for this engine",
-        ));
-    }
     let messages = body
         .get("messages")
         .and_then(Value::as_array)
@@ -84,12 +75,9 @@ pub fn prompt_and_limit(body: &Value) -> Result<(&[Value], u64), InferenceError>
         message
             .get("role")
             .and_then(Value::as_str)
-            .filter(|role| matches!(*role, "system" | "user" | "assistant"))
+            .filter(|role| matches!(*role, "system" | "user" | "assistant" | "tool"))
             .ok_or(BAD_REQUEST)?;
-        let content = message
-            .get("content")
-            .and_then(Value::as_str)
-            .ok_or(BAD_REQUEST)?;
+        let content = message["content"].as_str().unwrap_or_default();
         if content
             .chars()
             .any(|c| c.is_control() && !matches!(c, '\r' | '\n' | '\t'))
@@ -150,7 +138,7 @@ pub fn admit_model(
 }
 
 pub struct NativeReply {
-    pub text: String,
+    pub message: Value,
     pub finish: &'static str,
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
@@ -177,16 +165,14 @@ fn read_reply(line: &str, prompt: &NativePrompt, max: u64) -> Option<NativeReply
     if ids.len() as u64 > max || finish == "length" && ids.len() as u64 != max {
         return None;
     }
-    let added = prompt.tokenizer.get_added_tokens_decoder();
-    if ids.iter().any(|id| {
-        prompt.tokenizer.id_to_token(*id).is_none()
-            || added.get(id).is_some_and(|token| token.special)
-    }) {
-        return None;
-    }
-    let text = prompt.tokenizer.decode(&ids, false).ok()?;
+    let message = prompt.tools.decode(&prompt.tokenizer, &ids, finish)?;
+    let finish = if message.get("tool_calls").is_some() {
+        "tool_calls"
+    } else {
+        finish
+    };
     Some(NativeReply {
-        text,
+        message,
         finish,
         prompt_tokens: prompt.input_ids.len(),
         completion_tokens: ids.len(),

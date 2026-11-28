@@ -183,7 +183,7 @@ fn send_asset(stream: &mut TcpStream, mime: &str, html_body: &str) {
 fn completion_json(model: &str, reply: native_inference::NativeReply) -> Value {
     json!({
         "id":"chatcmpl-inkling2", "object":"chat.completion", "model":model,
-        "choices":[{"index":0,"message":{"role":"assistant","content":reply.text},"finish_reason":reply.finish}],
+        "choices":[{"index":0,"message":reply.message,"finish_reason":reply.finish}],
         "usage":{"prompt_tokens":reply.prompt_tokens,"completion_tokens":reply.completion_tokens,
                  "total_tokens":reply.prompt_tokens + reply.completion_tokens}
     })
@@ -214,11 +214,15 @@ fn start_desktop_body(
 }
 
 fn send_sse_completion(stream: &mut TcpStream, model: &str, reply: &native_inference::NativeReply) {
-    let chunk1 = format!(
-        "data: {{\"id\":\"chatcmpl-inkling2\",\"object\":\"chat.completion.chunk\",\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\",\"content\":\"{}\"}},\"finish_reason\":null}}]}}\n\n",
-        json_escape(model),
-        json_escape(&reply.text)
-    );
+    let mut delta = reply.message.clone();
+    if let Some(calls) = delta.get_mut("tool_calls").and_then(Value::as_array_mut) {
+        for (i, call) in calls.iter_mut().enumerate() {
+            call["index"] = i.into();
+        }
+    }
+    let chunk = json!({"id":"chatcmpl-inkling2","object":"chat.completion.chunk","model":model,
+        "choices":[{"index":0,"delta":delta,"finish_reason":null}]});
+    let chunk1 = format!("data: {chunk}\n\n");
     let chunk2 = format!(
         "data: {{\"id\":\"chatcmpl-inkling2\",\"object\":\"chat.completion.chunk\",\"model\":\"{}\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"{}\"}}]}}\n\n",
         json_escape(model),
@@ -972,7 +976,8 @@ fn handle_client(mut stream: TcpStream, ctx: &BridgeContext) {
             };
             let mut desktop_body = None;
             let result = native_inference::prompt_and_limit(&body).and_then(|(messages, max)| {
-                let prompt = crate::native_prompt::prepare(&model, messages, max)?;
+                let tools = crate::native_tools::Tools::from_request(&body)?;
+                let prompt = crate::native_prompt::prepare(&model, messages, max, tools)?;
                 let mut capacity = native_inference::context_capacity(
                     &body,
                     prompt.input_ids.len() + max as usize,

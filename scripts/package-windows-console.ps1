@@ -18,6 +18,10 @@ foreach ($file in 'LICENSE', 'README.md', 'CHANGELOG.md', 'RELEASE_NOTES.md') {
     Copy-Item -LiteralPath (Join-Path $repo $file) -Destination $stage
 }
 Copy-Item -LiteralPath (Join-Path $repo 'docs') -Destination $stage -Recurse
+$tokenizerNotices = New-Item -ItemType Directory -Path "$stage/notices/sc117-tokenizer"
+foreach ($file in 'NOTICE.txt','LICENSE-APACHE-2.0.txt') {
+    Copy-Item -LiteralPath (Join-Path $repo "crates/inkling2-shell/assets/sc117/$file") -Destination $tokenizerNotices.FullName
+}
 
 $raw = cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc --manifest-path (Join-Path $repo 'Cargo.toml')
 if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata could not be read.' }
@@ -44,6 +48,12 @@ $components = foreach ($package in $graph.packages) {
         }
     }
     $component
+}
+$tokenizer = Join-Path $repo 'crates/inkling2-shell/assets/sc117/tokenizer.json'
+$components += @{
+    type='data'; name='Inkling-2-Mini tokenizer'; version='c9d028302cd0f035fdf8e7e91f089a4ce94d2195'
+    'bom-ref'='sc117-tokenizer'; licenses=@(@{license=@{id='Apache-2.0'}})
+    hashes=@(@{alg='SHA-256'; content=(Get-FileHash -LiteralPath $tokenizer).Hash.ToLowerInvariant()})
 }
 $dependencies = foreach ($node in $graph.resolve.nodes) {
     @{ref=$node.id; dependsOn=@($node.dependencies)}

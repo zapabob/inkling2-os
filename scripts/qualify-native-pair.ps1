@@ -15,7 +15,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 $osRepo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $engineSource = (Resolve-Path -LiteralPath $EngineRepo).Path
 $modelPath = (Resolve-Path -LiteralPath $Model).Path
-$tokenizer = (Resolve-Path -LiteralPath (Join-Path (Split-Path $modelPath) 'tokenizer.json')).Path
+$tokenizer = (Resolve-Path -LiteralPath (Join-Path $osRepo 'crates/inkling2-shell/assets/sc117/tokenizer.json')).Path
 $additional = @($AdditionalModel | ForEach-Object { Get-Item -LiteralPath $_ } | Sort-Object Name)
 $expectedNames = @('Inkling-2-Mini-SQ-15-abliterated.strata','Inkling-2-Mini-SQ-20-abliterated.strata')
 if ((Split-Path $modelPath -Leaf) -ne 'Inkling-2-Mini-SQ-10-abliterated.strata' -or
@@ -71,9 +71,6 @@ try {
 
     foreach ($weight in $additional) {
         $env:INKLING2_TEST_MODEL = $weight.FullName
-        if ((Get-FileHash (Join-Path $weight.DirectoryName 'tokenizer.json')).Hash -ne (Get-FileHash $tokenizer).Hash) {
-            throw 'The offline bundle requires the shared SC117 tokenizer.'
-        }
         cargo test --locked -p inkling2-shell native_prompt::tests::matches_reference_token_ids -- --ignored --exact
         $python = (Get-Content -LiteralPath (Join-Path $windowsBuild 'CMakeCache.txt') |
             Select-String '^_Python3_EXECUTABLE:INTERNAL=(.+)$').Matches[0].Groups[1].Value

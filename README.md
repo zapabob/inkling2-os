@@ -26,7 +26,7 @@ The HTTP model list advertises the native context limit. `GET /v1/engine/status`
 Extract the Windows console archive into an empty directory, then extract the matching
 engine archive into its `bin` directory. With PowerShell 7.4 or newer, run the desktop
 launcher from the extracted directory. Replace the example model directory with your
-own SC117 weights and matching tokenizer.
+own SC117 weights. The bridge includes the publisher's tokenizer for SQ-10, SQ-15 and SQ-20.
 
 ```powershell
 ./scripts/start-windows-desktop.ps1 -ModelsDir 'C:/Models/SC117' -RegisterAtLogon
@@ -58,19 +58,25 @@ Build with `cargo build --release --locked --workspace -j 1`. From a Windows bun
 
 The default address is `http://127.0.0.1:18081/`. The launcher defaults to key-free local mode. Use `-UseTokens` on shared Windows machines or when forwarding the port. In that mode, `-CopyToken Console` copies the console credential for **Unlock**.
 
-In Strata, add a custom OpenAI Chat Completions connection with base URL `http://127.0.0.1:18081/v1` and use the exact model ID returned by `GET /v1/models`. Local mode does not require an API key. When the launcher uses `-UseTokens`, configure the **Inference** token. Keep each model’s matching `tokenizer.json` beside it.
+In Strata, add a custom OpenAI Chat Completions connection with base URL `http://127.0.0.1:18081/v1` and use the exact model ID returned by `GET /v1/models`. Local mode does not require an API key. When the launcher uses `-UseTokens`, configure the **Inference** token.
 
 Use the CUDA executable that supports `generate-token-ids`. The shell reads the matching model chat template and tokenizer, and the engine accepts the resulting token IDs. Select no reasoning for the native adapter.
 
+### Using Hermes Agent
+
+With the desktop running, choose a custom Chat Completions provider in Hermes. Set its base URL to `http://127.0.0.1:18083/v1` and select an ID from `GET /v1/models`, for example `Inkling-2-Mini-SQ-15-abliterated`. The local connection is key-free. Configure the model context as 131,072, maximum output as 128 tokens per turn and reasoning as off.
+
+Hermes sends its function declarations with the conversation. The bridge renders them with the model's own template, decodes one declared function call per assistant turn and returns its name, JSON arguments and call ID. Hermes executes the function under its configured permissions and sends the tool result back with that ID. Both ordinary JSON and buffered streaming responses support this exchange.
+
 ### SQ-15 and SQ-20 on Windows
 
-The launcher also scans the installed Strata folder under `%LOCALAPPDATA%/Strata/model-weights/SC117/Inkling-2-Mini`. You can add other model folders with `-AdditionalModelsDirs`. All three SC117 weights use the same root `tokenizer.json` from the model publisher. On this workstation the launcher detects the NVMe, SATA SSD and removable USB by their Windows storage bus. The engine keeps priority experts in VRAM and CPU RAM, then caches cold experts in temporary files of up to 256 MiB per drive. It leaves 2 GiB free per volume and uses the original weights when a cache is unavailable. The installed Start menu entry opens the local GUI.
+The launcher also scans the installed Strata folder under `%LOCALAPPDATA%/Strata/model-weights/SC117/Inkling-2-Mini`. You can add other model folders with `-AdditionalModelsDirs`. The bridge uses a tokenizer supplied by the model manifest or model folder when present, and otherwise uses its embedded SC117 tokenizer. On this workstation the launcher detects the NVMe, SATA SSD and removable USB by their Windows storage bus. The engine keeps priority experts in VRAM and CPU RAM, then caches cold experts in temporary files of up to 256 MiB per drive. It leaves 2 GiB free per volume and uses the original weights when a cache is unavailable. The installed Start menu entry opens the local GUI.
 
 ### Publishing a Windows pair
 
 In the x64 Visual Studio Developer PowerShell, set `$engine` to the CUDA engine checkout,
 `$sq10`, `$sq15` and `$sq20` to the original model files, and `$qualification` to a new
-output directory. Each model needs its matching sibling `tokenizer.json`.
+output directory. The original SC117 weights can be qualified in directories containing only the model files.
 
 ```powershell
 ./scripts/qualify-native-pair.ps1 -WindowsOnly -EngineRepo $engine -Model $sq10 -AdditionalModel @($sq15, $sq20) -CudaRoot $env:CUDA_PATH -OutputDir $qualification

@@ -54,6 +54,7 @@ FROM appliance-packages AS appliance
 COPY --from=wine-prefix /out/wine-prefix.tar.gz /usr/share/inkling2/
 COPY --from=rust-build /compiled/inkling2-init /sbin/inkling2-init
 COPY --from=rust-build /compiled/inkling2-shell /usr/bin/inkling2-shell
+COPY crates/inkling2-shell/assets/sc117/*.txt /usr/share/doc/inkling2-shell/sc117-tokenizer/
 COPY --from=search-build /search/target/release/rustxng /usr/bin/rustxng
 COPY --from=search-build /search/LICENSE /search/NOTICE /usr/share/doc/rustxng/
 COPY --from=search-build /search/rustxng-0.32.0-source.tar.gz /usr/share/doc/rustxng/
