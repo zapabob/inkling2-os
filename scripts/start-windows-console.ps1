@@ -111,6 +111,21 @@ if ($Resident) {
         $settings.INKLING2_SQ15_EXPERT_RAM_MIB = '2048'
     }
     if (-not $env:INKLING2_SQ15_CACHED_READS) { $settings.INKLING2_SQ15_CACHED_READS = '1' }
+    # SQv2-20 has 14.63 GiB of routed weights. Fit the remainder in host memory
+    # when WDDM reduces the GPU allocation. The engine clips both caps live.
+    if (-not $env:INKLING2_EXPERT_VRAM_MIB -and -not $env:INKLING2_SQV2_20_EXPERT_VRAM_MIB) {
+        $settings.INKLING2_SQV2_20_EXPERT_VRAM_MIB = '10366'
+    }
+    if (-not $env:INKLING2_EXPERT_RAM_MIB -and -not $env:INKLING2_SQV2_20_EXPERT_RAM_MIB) {
+        $settings.INKLING2_SQV2_20_EXPERT_RAM_MIB = '7038'
+    }
+    if (-not $env:INKLING2_SQV2_20_CACHED_READS) { $settings.INKLING2_SQV2_20_CACHED_READS = '1' }
+    if (-not $env:INKLING2_CUDA_GRAPHS -and -not $env:INKLING2_SQV2_20_CUDA_GRAPHS) {
+        $settings.INKLING2_SQV2_20_CUDA_GRAPHS = '1'
+    }
+    if (-not $env:INKLING2_BF16_TENSOR_CORES -and -not $env:INKLING2_SQV2_20_BF16_TENSOR_CORES) {
+        $settings.INKLING2_SQV2_20_BF16_TENSOR_CORES = '1'
+    }
     if ($PreloadModel) { $settings.INKLING2_PRELOAD_MODEL = $PreloadModel }
     if (-not $env:INKLING2_EXPERT_VRAM_MIB) { $settings.INKLING2_EXPERT_VRAM_MIB = '2048' }
     if (-not $env:INKLING2_EXPERT_RAM_MIB) { $settings.INKLING2_EXPERT_RAM_MIB = '512' }

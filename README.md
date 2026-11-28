@@ -23,6 +23,8 @@ See the [NEON architecture](docs/NEON_ARCHITECTURE.md), [Hermes API and examples
 
 ## Windows console
 
+In resident mode the Windows launcher enables CUDA 13.5 projection graphs and BF16 Tensor Cores for 16 KiB SQ-20 models. It gives routed weights a separate GPU and host memory budget. First startup can take longer while those weights load. The engine log reports the actual placement, per-request storage wait, graph launches and BF16 kernel launches. Set `INKLING2_SQV2_20_CUDA_GRAPHS` or `INKLING2_SQV2_20_BF16_TENSOR_CORES` to `0` before starting the console to compare the paths independently.
+
 The desktop also recognises the 16 KiB SQv2 layout used by [Kujira’s CHiPS SQ-20 pack](https://huggingface.co/Kujira/Inkling-2-Mini-Strata-CHiPS-Abliterated). Keep the downloaded `.strata` in place. Pass its directory through `-AdditionalModelsDirs` on `start-windows-console.ps1`, or add the directory to the per-user `INKLING2_ADDITIONAL_MODEL_DIRS` environment variable for desktop launches (separate Windows paths with semicolons). Restart the console and select `Inkling-2-Mini-SQv2-20-CHiPS` from the model menu. The same ID is returned by `/v1/models` and accepted by `/v1/chat/completions`. The pack supplies its chat template and can use the embedded SC117 tokenizer.
 
 Use an RTX 5060 Ti 16 GB or a compatible Blackwell `sm_120a` system with a CUDA 13.5-capable driver, PowerShell 7.4 or newer and original SC117 SQ-10, SQ-15 or SQ-20 `.strata` weights. The desktop embeds the SC117 tokenizer and reads the chat template from the model. The two Windows archives include the shell, CUDA executable and its runtime libraries. Supply the weights separately.
