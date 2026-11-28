@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.0 for Windows
+
+Discover and preload 16 KiB SQv2 CHiPS alongside classic SC117 models. The Windows resident profile places routed weights across GPU and host memory and uses CUDA projection graphs and compensated BF16 Tensor Core kernels. Pair with engine 1.4.0.
+
 ## 1.3.0 for Windows
 
 Add NEON perception, voice, typed inspection tasks, persistent neural memory and learning status. Pair with the 1.3.0 CUDA engine for native resident LoRA management.

@@ -1,5 +1,5 @@
-# Inkling2 Desktop 1.3.0 for Windows
+# Inkling2 Desktop 1.4.0 for Windows
 
-NEON adds two executable inspection tasks, opt-in camera capture, sentence-queued speech, persistent Neural Memory45 feedback and learning telemetry for local clients. The original SC117 chat API, 131,072-context option and SQ-15 resident profile remain available. Camera capture is disabled on a default launch. Client feedback is stored with provenance and cannot grant itself training permission.
+The Windows desktop discovers the 16 KiB SQv2 CHiPS SQ-20 pack alongside classic SC117 SQ-10, SQ-15 and SQ-20. The configured resident model is selected when a new desktop opens. Existing local weights can be used in place.
 
-Extract the [matching CUDA engine](https://github.com/zapabob/inkling2-cuda-engine/releases/tag/v1.3.0) into the console's `bin` directory and supply the SC117 weights locally. The console ZIP includes the tokenizer and the NEON API reference. See the [Windows guide](https://github.com/zapabob/inkling2-os/blob/v1.3.0/README.md).
+Pair the console with the [1.4.0 CUDA engine](https://github.com/zapabob/inkling2-cuda-engine/releases/tag/v1.4.0). The CHiPS resident profile uses GPU and host memory for routed weights, CUDA projection graphs and compensated BF16 Tensor Core kernels. Expert placement and startup time depend on available memory and storage speed. The console archive includes the tokenizer. Supply your own model weights. See the [Windows installation guide](https://github.com/zapabob/inkling2-os/blob/v1.4.0/README.md#windows-console).
